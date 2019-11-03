@@ -222,6 +222,36 @@ ifeq ($(USE_SYSTEM_ZLIB),1)
 LFLAGS                  += -lz
 endif
 
+
+# Electrum 4/5
+# for Electrum 4/5 we need BIGNUM from OpenSSL (or libgmp + num_gmp.h from libsecp256k1)
+# we could use gmplib and compile secp256k1 with ./configure --with-bignum=gmp
+# ./configure --with-bignum=gmp CFLAGS="-I../gmp/ -L../gmp/.libs/"
+# placing it in deps/gmp/ or use the system libgmp3-dev
+
+ifeq ($(UNAME),Linux)
+ifneq ($(findstring win,$(MAKECMDGOALS)),) # only way to detect cross-compilation ?
+# in /opt/openssl/:
+# ./Configure mingw64 shared --cross-compile-prefix=x86_64-w64-mingw32-
+# make
+LFLAGS += -L/opt/openssl/ -lssleay32 -llibeay32
+CFLAGS += -I/opt/openssl/include/
+else
+LFLAGS += -lssl -lcrypto
+endif
+else
+LFLAGS += -lssl -lcrypto
+endif
+
+# alternative to OpenSSL BIGNUM with the secp256k1 + gmplib implementation:
+# need to place and compile the gmplib source code into deps/gmp/ and compile the lib
+#LFLAGS += -Ldeps/gmp/.libs/ -lgmp
+#CFLAGS += -Ideps/gmp/ -Ideps/secp256k1/src/
+
+CFLAGS += -Ideps/secp256k1/include/
+
+SECP256K1_OBJS := deps/secp256k1/src/.libs/libsecp256k1_la-secp256k1.o
+
 # OpenCL
 CFLAGS                  += -I$(DEPS_OPENCL_PATH)
 
@@ -530,7 +560,7 @@ ifeq ($(SHARED),1)
 modules/module_%.$(MODULE_SUFFIX): src/modules/module_%.c $(HASHCAT_LIBRARY)
 	$(CC)    $(CFLAGS_NATIVE) $^ -o $@ $(LFLAGS_NATIVE) -shared -fPIC -D MODULE_INTERFACE_VERSION_CURRENT=$(MODULE_INTERFACE_VERSION)
 else
-modules/module_%.$(MODULE_SUFFIX): src/modules/module_%.c obj/combined.NATIVE.a
+modules/module_%.$(MODULE_SUFFIX): src/modules/module_%.c obj/combined.NATIVE.a $(SECP256K1_OBJS)
 	$(CC)    $(CFLAGS_NATIVE) $^ -o $@ $(LFLAGS_NATIVE) -shared -fPIC -D MODULE_INTERFACE_VERSION_CURRENT=$(MODULE_INTERFACE_VERSION)
 endif
 
@@ -603,10 +633,24 @@ MODULES_LIB_WIN     := $(patsubst src/modules/module_%.c, modules/module_%.dll, 
 modules_linux: $(MODULES_LIB_LINUX)
 modules_win:   $(MODULES_LIB_WIN)
 
+# we assume that gmplib (libgmp-dev or libgmp3-dev) is not installed,
+# otherwise we would need to use -lgmp for linking and resolving the symbols
+
+$(SECP256K1_OBJS):
+	@#cd deps/secp256k1/ && make clean > /dev/null 2>/dev/null
+	@#cd deps/secp256k1/ && make distclean > /dev/null 2>/dev/null
+	@cd deps/secp256k1/ && ./autogen.sh > /dev/null 2>/dev/null
+ifneq ($(findstring win,$(MAKECMDGOALS)),) # only way to detect cross-compilation ?
+	@cd deps/secp256k1/ && ./configure --with-bignum=no --build=mingw64 x86_64-w64-mingw32 > /dev/null 2>/dev/null
+else
+	@cd deps/secp256k1/ && ./configure --with-bignum=no > /dev/null 2>/dev/null
+endif
+	@cd deps/secp256k1/ && make > /dev/null 2>/dev/null
+
 modules/module_%.so:  src/modules/module_%.c obj/combined.LINUX.a
 	$(CC_LINUX)  $(CFLAGS_CROSS_LINUX) $^ -o $@ $(LFLAGS_CROSS_LINUX) -shared -fPIC -D MODULE_INTERFACE_VERSION_CURRENT=$(MODULE_INTERFACE_VERSION)
 
-modules/module_%.dll: src/modules/module_%.c obj/combined.WIN.a
+modules/module_%.dll: src/modules/module_%.c obj/combined.WIN.a $(SECP256K1_OBJS)
 	$(CC_WIN)    $(CFLAGS_CROSS_WIN)   $^ -o $@ $(LFLAGS_CROSS_WIN)   -shared -fPIC -D MODULE_INTERFACE_VERSION_CURRENT=$(MODULE_INTERFACE_VERSION)
 
 ##
