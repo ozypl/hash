@@ -16,6 +16,8 @@ USE_SYSTEM_OPENCL       := 0
 USE_SYSTEM_XXHASH       := 0
 
 # Note: USE_SYSTEM_GMPLIB is only useful for libsecp256k1 if USE_SYSTEM_LIBSECP256K1 is 0
+# there is a slight problem of using the system libsecp256k1 and/or gmplib for distribution of hashcat:
+# the GNU LGPL/GPL licenses have some implications for how the binary can be used (MIT vs GNU licenses)
 
 ##
 ## Detect Operating System
@@ -249,10 +251,13 @@ else
 CFLAGS                  += -I$(DEPS_LIBSECP256K1_PATH)/include/
 
 ifeq ($(USE_SYSTEM_GMPLIB),1)
+$(warning "! GMPLIB (GNU MP) is dual licensed under LGPLv3/GPLv2,")
+$(warning " which has some implications for how the hashcat binary can be used etc")
+$(warning " If in doubt, compile with the IMath alternative instead")
 LFLAGS                  += -lgmp
 CFLAGS_LIBSECP256K1     += -DWITH_GMPLIB
 else
-DEPS_GMPLIB_PATH        := deps/gmp/mini-gmp/
+DEPS_GMPLIB_PATH        := deps/imath/
 CFLAGS_LIBSECP256K1     += -I$(DEPS_GMPLIB_PATH)
 endif
 endif

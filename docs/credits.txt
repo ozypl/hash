@@ -57,7 +57,7 @@ Other contributors to hashcat
 * zlib by Jean-loup Gailly and Mark Adler
 * win-iconv by Yukihiro Nakadaira
 * secp256k1 library by Pieter Wuille
-* GNU MP (gmplib) by the GNU Project
+* IMath by M. J. Fromberger
 
 # Furthermore the following persons helped the project:
 

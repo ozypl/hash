@@ -10,9 +10,17 @@
 
 #if !defined (WITH_LIBSECP256K1)
 
+// using GMP or mini-gmp would be perfect, but GNU MP (GMPLIB) is dual licensed under LGPL/GPL,
+// which would come with some consequences for the use/distribution/freedom of hashcat
+
 #if !defined (WITH_GMPLIB)
-#include "mini-gmp.h"
-#include "mini-gmp.c"
+// imath uses its own MIN/MAX macros
+#undef MIN
+#undef MAX
+#include "imath.h"
+#include "imath.c"
+//#include "mini-gmp.h"
+//#include "mini-gmp.c"
 #else
 #include "gmp.h"
 #endif
@@ -64,6 +72,73 @@ bool hc_secp256k1_pubkey_tweak_mul (secp256k1_pubkey pubkey, u8 *buf, size_t len
 }
 
 #if !defined (WITH_LIBSECP256K1)
+#if !defined (WITH_GMPLIB)
+void hc_secp256k1_bignum_mod (const u8 *in, const u8 in_len, u8 *out, const u8 out_len)
+{
+  // divisor:
+
+  mpz_t d;
+  mp_int_init (&d);
+
+  u32 group_order[8];
+
+  group_order[0] = 0xffffffff;
+  group_order[1] = 0xffffffff;
+  group_order[2] = 0xffffffff;
+  group_order[3] = 0xfeffffff;
+
+  group_order[4] = 0xe6dcaeba;
+  group_order[5] = 0x3ba048af;
+  group_order[6] = 0x8c5ed2bf;
+  group_order[7] = 0x414136d0;
+
+  mp_int_read_unsigned (&d, (u8 *) group_order, out_len);
+
+  // or use:
+  // mp_int_read_string (&d, 16, "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
+
+
+  // divident:
+
+  mpz_t n;
+  mp_int_init (&n);
+
+  mp_int_read_unsigned (&n, (u8 *) in, in_len);
+
+
+  // remainder:
+
+  mpz_t r;
+  mp_int_init (&r);
+
+  mp_int_mod (&n, &d, &r);
+
+
+  // mpz_t to binary:
+
+  size_t export_len = mp_int_unsigned_len (&r);
+
+  mp_int_to_unsigned (&r, out, out_len);
+
+  mp_int_clear (&r);
+  mp_int_clear (&n);
+  mp_int_clear (&d);
+
+
+  // fix the out buffer to make it exactly 32 bytes
+
+  for (size_t i = export_len; i < (size_t) out_len; i++)
+  {
+    for (int j = out_len - 1; j > 0; j--)
+    {
+      out[j] = out[j - 1];
+    }
+
+    out[0] = 0;
+  }
+}
+#else
+
 void hc_secp256k1_bignum_mod (const u8 *in, const u8 in_len, u8 *out, const u8 out_len)
 {
   // divisor:
@@ -128,10 +203,9 @@ void hc_secp256k1_bignum_mod (const u8 *in, const u8 in_len, u8 *out, const u8 o
     }
 
     out[0] = 0;
-
-    export_len++;
   }
 }
+#endif // WITH_GMPLIB
 
 // BTW: there are other alternatives too e.g. using BN_mod () from OpenSSL
 // (but we would need to compile/link OpenSSL in that case)
