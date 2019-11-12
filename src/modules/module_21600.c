@@ -13,36 +13,15 @@
 #include "emu_inc_hash_sha512.h"
 #include "emu_inc_hash_sha256.h"
 #include "emu_inc_cipher_aes.h"
+#include "ext_secp256k1.h"
 #include "zlib.h"
-
-#include "secp256k1.h"
-
-// BIGNUM
-#include <openssl/bn.h>
-
-/*
-// alternative to BIGNUM by using secp256k1_pubkey + gmplib:
-
-#define HAVE___INT128
-#include "util.h"
-
-#define USE_NUM_GMP
-#include "num_gmp_impl.h"
-
-#define USE_SCALAR_4X64
-#include "scalar.h"
-
-#define USE_SCALAR_INV_NUM
-#include "scalar_impl.h"
-*/
-
 
 static const u32   ATTACK_EXEC    = ATTACK_EXEC_OUTSIDE_KERNEL;
 static const u32   DGST_POS0      = 0;
 static const u32   DGST_POS1      = 1;
 static const u32   DGST_POS2      = 2;
 static const u32   DGST_POS3      = 3;
-static const u32   DGST_SIZE      = DGST_SIZE_8_16;
+static const u32   DGST_SIZE      = DGST_SIZE_4_4;
 static const u32   HASH_CATEGORY  = HASH_CATEGORY_PASSWORD_MANAGER;
 static const char *HASH_NAME      = "Electrum Wallet (Salt-Type 4-5)";
 static const u64   KERN_TYPE      = 21600;
@@ -125,6 +104,8 @@ void module_hook23 (hc_device_param_t *device_param, const void *hook_salts_buf,
 
   electrum_hook_t *hook_item = &hook_items[pw_pos];
 
+  hook_item->hook_success = 0;
+
   const u64 *ukey_64 = (const u64 *) hook_item->ukey;
 
   u32 ukey[16];
@@ -170,85 +151,28 @@ void module_hook23 (hc_device_param_t *device_param, const void *hook_salts_buf,
   ukey[15] = byte_swap_32 (ukey[15]);
 
   /*
-   * Start with ECC
+   * Start with Elliptic Curve Cryptography (ECC)
    */
 
-  const u8 *ukey_ptr = (const u8 *) ukey;
+  // first step: just reduce the 512-bit key to 256 bits by a bignum modulo operation:
 
-  BIGNUM *p = BN_bin2bn (ukey_ptr, 64, NULL);
-
-  // secp256k1_ecdsa_const_order_as_fe / secp256k1_scalar_order_get_num (&order):
-
-  static const char *group_order = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141";
-
-  BIGNUM *q = BN_new ();
-  BN_hex2bn (&q, group_order);
-
-  BN_CTX *ctx = BN_CTX_new ();
-  BIGNUM *r = BN_new ();
-  BN_mod (r, p, q, ctx);
-  BN_CTX_free (ctx);
-
-  BN_free (p);
-  BN_free (q);
-
-  unsigned char tmp_buf[33 + 3]; // +3 (instead of +1) to make it a multiple of 4
+  u8 tmp_buf[33 + 3]; // +3 (instead of +1) to make it a multiple of 4
 
   memset (tmp_buf, 0, sizeof (tmp_buf));
 
-  BN_bn2bin (r, tmp_buf);
-  BN_free (r);
+  size_t length = 32;
 
-
-  /*
-   * Alternative: use secp256k1 function with gmplib instead of BIGNUM from OpenSSL
-   */
-
-  /*
-
-  // group order:
-
-  secp256k1_num order;
-
-  secp256k1_scalar_order_get_num (&order);
-
-
-  secp256k1_num mod;
-
-  secp256k1_num_set_bin (&mod, ukey_ptr, 64);
-
-
-  // the actual modulo operation:
-
-  secp256k1_num_mod (&mod, &order);
-
-
-  // to binary conversion:
-
-  unsigned char tmp_buf[33 + 3]; // +3 (instead of +1) to make it a multiple of 4
-
-  memset (tmp_buf, 0, sizeof (tmp_buf));
-
-  secp256k1_num_get_bin (tmp_buf, 32, &mod);
-
-  */
-
-  /*
-   * /END of secp256k1 alternative
-   */
+  hc_secp256k1_bignum_mod ((const u8 *) ukey, 64, tmp_buf, length);
 
   // we need to copy it because the secp256k1_ec_pubkey_tweak_mul () function has side effects
 
   secp256k1_pubkey pubkey = ephemeral_pubkey; // the copy of the struct is enough (shallow copy)
 
-  secp256k1_context *sctx = secp256k1_context_create (SECP256K1_CONTEXT_VERIFY);
+  length++; // NOT a bug (32 + 1 for the sign)
 
-  if (secp256k1_ec_pubkey_tweak_mul (sctx, &pubkey, tmp_buf) == 0) return;
+  bool multiply_success = hc_secp256k1_pubkey_tweak_mul (pubkey, tmp_buf, length);
 
-  size_t length = 33;
-
-  secp256k1_ec_pubkey_serialize (sctx, tmp_buf, &length, &pubkey, SECP256K1_EC_COMPRESSED);
-  secp256k1_context_destroy (sctx);
+  if (multiply_success == false) return;
 
   u32 input[64];
 
@@ -579,18 +503,11 @@ int module_hash_decode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
     electrum->ephemeral_pubkey_raw[i] = hex_to_u8 (ephemeral_pos + j);
   }
 
-  secp256k1_context *t_ctx = secp256k1_context_create (SECP256K1_CONTEXT_NONE);
-
   size_t length = 33;
 
-  if (secp256k1_ec_pubkey_parse (t_ctx, &electrum->ephemeral_pubkey_struct, electrum->ephemeral_pubkey_raw, length) == 0)
-  {
-    secp256k1_context_destroy (t_ctx);
+  bool parse_success = hc_secp256k1_pubkey_parse (&electrum->ephemeral_pubkey_struct, electrum->ephemeral_pubkey_raw, length);
 
-    return (PARSER_SALT_VALUE);
-  }
-
-  secp256k1_context_destroy (t_ctx);
+  if (parse_success == false) return (PARSER_SALT_VALUE);
 
   // data buf:
 

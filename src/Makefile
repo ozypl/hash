@@ -10,8 +10,12 @@ PRODUCTION_VERSION      := v5.1.0
 ENABLE_BRAIN            := 1
 USE_SYSTEM_LZMA         := 0
 USE_SYSTEM_ZLIB         := 0
+USE_SYSTEM_LIBSECP256K1 := 0
+USE_SYSTEM_GMPLIB       := 0
 USE_SYSTEM_OPENCL       := 0
 USE_SYSTEM_XXHASH       := 0
+
+# Note: USE_SYSTEM_GMPLIB is only useful for libsecp256k1 if USE_SYSTEM_LIBSECP256K1 is 0
 
 ##
 ## Detect Operating System
@@ -120,6 +124,12 @@ else
 DEPS_ZLIB_PATH          := $(LIBRARY_DEV_ROOT_FOLDER)/
 endif
 
+ifeq ($(USE_SYSTEM_LIBSECP256K1),0)
+DEPS_LIBSECP256K1_PATH  := deps/secp256k1/
+else
+DEPS_LIBSECP256K1_PATH  := $(LIBRARY_DEV_ROOT_FOLDER)/
+endif
+
 ifeq ($(USE_SYSTEM_OPENCL),0)
 DEPS_OPENCL_PATH        := deps/OpenCL-Headers
 else
@@ -184,6 +194,11 @@ CFLAGS_ZLIB             += -Wno-unused-parameter
 CFLAGS_ZLIB             += -DIOAPI_NO_64
 endif
 
+## because LIBSECP256K1 (Electrum 4/5)
+CFLAGS_LIBSECP256K1     += -Wno-unused-parameter
+CFLAGS_LIBSECP256K1     += -Wno-unused-function
+CFLAGS_LIBSECP256K1     += -Wno-nonnull-compare
+
 ifeq ($(DEBUG),0)
 CFLAGS                  += -O2
 ifneq ($(UNAME),Darwin)
@@ -222,35 +237,25 @@ ifeq ($(USE_SYSTEM_ZLIB),1)
 LFLAGS                  += -lz
 endif
 
+# LIBSECP256K1
+CFLAGS_LIBSECP256K1     += -I$(DEPS_LIBSECP256K1_PATH)
+CFLAGS_LIBSECP256K1     += -Ideps/secp256k1/src/
 
-# Electrum 4/5
-# for Electrum 4/5 we need BIGNUM from OpenSSL (or libgmp + num_gmp.h from libsecp256k1)
-# we could use gmplib and compile secp256k1 with ./configure --with-bignum=gmp
-# ./configure --with-bignum=gmp CFLAGS="-I../gmp/ -L../gmp/.libs/"
-# placing it in deps/gmp/ or use the system libgmp3-dev
-
-ifeq ($(UNAME),Linux)
-ifneq ($(findstring win,$(MAKECMDGOALS)),) # only way to detect cross-compilation ?
-# in /opt/openssl/:
-# ./Configure mingw64 shared --cross-compile-prefix=x86_64-w64-mingw32-
-# make
-LFLAGS += -L/opt/openssl/ -lssleay32 -llibeay32
-CFLAGS += -I/opt/openssl/include/
+ifeq ($(USE_SYSTEM_LIBSECP256K1),1)
+LFLAGS                  += -lsecp256k1
+CFLAGS_LIBSECP256K1     += -DWITH_LIBSECP256K1
 else
-LFLAGS += -lssl -lcrypto
-endif
+# NOT working if used only in CFLAGS_LIBSECP256K1 because we need to include secp256k1.h in the module too
+CFLAGS                  += -I$(DEPS_LIBSECP256K1_PATH)/include/
+
+ifeq ($(USE_SYSTEM_GMPLIB),1)
+LFLAGS                  += -lgmp
+CFLAGS_LIBSECP256K1     += -DWITH_GMPLIB
 else
-LFLAGS += -lssl -lcrypto
+DEPS_GMPLIB_PATH        := deps/gmp/mini-gmp/
+CFLAGS_LIBSECP256K1     += -I$(DEPS_GMPLIB_PATH)
 endif
-
-# alternative to OpenSSL BIGNUM with the secp256k1 + gmplib implementation:
-# need to place and compile the gmplib source code into deps/gmp/ and compile the lib
-#LFLAGS += -Ldeps/gmp/.libs/ -lgmp
-#CFLAGS += -Ideps/gmp/ -Ideps/secp256k1/src/
-
-CFLAGS += -Ideps/secp256k1/include/
-
-SECP256K1_OBJS := deps/secp256k1/src/.libs/libsecp256k1_la-secp256k1.o
+endif
 
 # OpenCL
 CFLAGS                  += -I$(DEPS_OPENCL_PATH)
@@ -332,7 +337,7 @@ EMU_OBJS_ALL            += emu_inc_truecrypt_crc32 emu_inc_truecrypt_keyfile emu
 EMU_OBJS_ALL            += emu_inc_hash_md4 emu_inc_hash_md5 emu_inc_hash_ripemd160 emu_inc_hash_sha1 emu_inc_hash_sha256 emu_inc_hash_sha384 emu_inc_hash_sha512 emu_inc_hash_streebog256 emu_inc_hash_streebog512
 EMU_OBJS_ALL            += emu_inc_cipher_aes emu_inc_cipher_camellia emu_inc_cipher_des emu_inc_cipher_kuznyechik emu_inc_cipher_serpent emu_inc_cipher_twofish
 
-OBJS_ALL                := affinity autotune backend benchmark bitmap bitops combinator common convert cpt cpu_crc32 debugfile dictstat dispatch dynloader event ext_ADL ext_cuda ext_nvapi ext_nvml ext_nvrtc ext_OpenCL ext_sysfs ext_lzma filehandling folder hashcat hashes hlfmt hwmon induct interface keyboard_layout locking logfile loopback memory monitor mpsp outfile_check outfile pidfile potfile restore rp rp_cpu selftest slow_candidates shared status stdout straight terminal thread timer tuningdb usage user_options wordlist $(EMU_OBJS_ALL)
+OBJS_ALL                := affinity autotune backend benchmark bitmap bitops combinator common convert cpt cpu_crc32 debugfile dictstat dispatch dynloader event ext_ADL ext_cuda ext_nvapi ext_nvml ext_nvrtc ext_OpenCL ext_sysfs ext_lzma ext_secp256k1 filehandling folder hashcat hashes hlfmt hwmon induct interface keyboard_layout locking logfile loopback memory monitor mpsp outfile_check outfile pidfile potfile restore rp rp_cpu selftest slow_candidates shared status stdout straight terminal thread timer tuningdb usage user_options wordlist $(EMU_OBJS_ALL)
 
 ifeq ($(ENABLE_BRAIN),1)
 OBJS_ALL                += brain
@@ -513,6 +518,9 @@ obj/%.NATIVE.o: $(DEPS_ZLIB_PATH)/%.c
 	$(CC) -c $(CFLAGS_NATIVE) $(CFLAGS_ZLIB) $< -o $@ -fpic
 endif
 
+obj/ext_secp256k1.NATIVE.o: src/ext_secp256k1.c
+	$(CC) -c $(CFLAGS_NATIVE) $(CFLAGS_LIBSECP256K1) $< -o $@ -fpic
+
 ifeq ($(USE_SYSTEM_XXHASH),0)
 ifeq ($(ENABLE_BRAIN),1)
 obj/%.NATIVE.o: $(DEPS_XXHASH_PATH)/%.c
@@ -560,7 +568,7 @@ ifeq ($(SHARED),1)
 modules/module_%.$(MODULE_SUFFIX): src/modules/module_%.c $(HASHCAT_LIBRARY)
 	$(CC)    $(CFLAGS_NATIVE) $^ -o $@ $(LFLAGS_NATIVE) -shared -fPIC -D MODULE_INTERFACE_VERSION_CURRENT=$(MODULE_INTERFACE_VERSION)
 else
-modules/module_%.$(MODULE_SUFFIX): src/modules/module_%.c obj/combined.NATIVE.a $(SECP256K1_OBJS)
+modules/module_%.$(MODULE_SUFFIX): src/modules/module_%.c obj/combined.NATIVE.a
 	$(CC)    $(CFLAGS_NATIVE) $^ -o $@ $(LFLAGS_NATIVE) -shared -fPIC -D MODULE_INTERFACE_VERSION_CURRENT=$(MODULE_INTERFACE_VERSION)
 endif
 
@@ -633,24 +641,10 @@ MODULES_LIB_WIN     := $(patsubst src/modules/module_%.c, modules/module_%.dll, 
 modules_linux: $(MODULES_LIB_LINUX)
 modules_win:   $(MODULES_LIB_WIN)
 
-# we assume that gmplib (libgmp-dev or libgmp3-dev) is not installed,
-# otherwise we would need to use -lgmp for linking and resolving the symbols
-
-$(SECP256K1_OBJS):
-	@#cd deps/secp256k1/ && make clean > /dev/null 2>/dev/null
-	@#cd deps/secp256k1/ && make distclean > /dev/null 2>/dev/null
-	@cd deps/secp256k1/ && ./autogen.sh > /dev/null 2>/dev/null
-ifneq ($(findstring win,$(MAKECMDGOALS)),) # only way to detect cross-compilation ?
-	@cd deps/secp256k1/ && ./configure --with-bignum=no --build=mingw64 x86_64-w64-mingw32 > /dev/null 2>/dev/null
-else
-	@cd deps/secp256k1/ && ./configure --with-bignum=no > /dev/null 2>/dev/null
-endif
-	@cd deps/secp256k1/ && make > /dev/null 2>/dev/null
-
 modules/module_%.so:  src/modules/module_%.c obj/combined.LINUX.a
 	$(CC_LINUX)  $(CFLAGS_CROSS_LINUX) $^ -o $@ $(LFLAGS_CROSS_LINUX) -shared -fPIC -D MODULE_INTERFACE_VERSION_CURRENT=$(MODULE_INTERFACE_VERSION)
 
-modules/module_%.dll: src/modules/module_%.c obj/combined.WIN.a $(SECP256K1_OBJS)
+modules/module_%.dll: src/modules/module_%.c obj/combined.WIN.a
 	$(CC_WIN)    $(CFLAGS_CROSS_WIN)   $^ -o $@ $(LFLAGS_CROSS_WIN)   -shared -fPIC -D MODULE_INTERFACE_VERSION_CURRENT=$(MODULE_INTERFACE_VERSION)
 
 ##
@@ -688,6 +682,12 @@ obj/%.WIN.o:   $(DEPS_XXHASH_PATH)/%.c
 	$(CC_WIN)   $(CFLAGS_CROSS_WIN)   -c -o $@ $<
 endif
 endif
+
+obj/ext_secp256k1.LINUX.o: src/ext_secp256k1.c
+	$(CC_LINUX) $(CFLAGS_CROSS_LINUX) $(CFLAGS_LIBSECP256K1) -c -o $@ $<
+
+obj/ext_secp256k1.WIN.o: src/ext_secp256k1.c
+	$(CC_WIN) $(CFLAGS_CROSS_WIN) $(CFLAGS_LIBSECP256K1) -c -o $@ $<
 
 obj/combined.LINUX.a: $(LINUX_OBJS)
 	$(AR_LINUX) rcs $@ $^

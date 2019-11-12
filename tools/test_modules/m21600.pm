@@ -136,6 +136,8 @@ sub module_generate_hash
 
   while ($valid_compression_rate == 0)
   {
+    $version = 4; # reset if version 5 failed
+
     my $data_buf = "{\r\n    \"";
 
     if (int (rand (2)) == 1) # alternative with different line break
@@ -148,8 +150,12 @@ sub module_generate_hash
 
     my $data_length = int (rand (($MAX_DATA_LEN * 1.30 * 2) + 1));
 
-  $data_buf .= random_string ($data_length - length ($data_buf)); # or random_bytes ($data_length - length ($data_buf));
+    my $random_length = $data_length - length ($data_buf);
 
+    if ($random_length > 0)
+    {
+      $data_buf .= random_string ($random_length); # or random_bytes ($random_length);
+    }
 
     # compress/deflate the data:
 
