@@ -150,6 +150,11 @@ sub module_generate_hash
 
     my $data_length = int (rand (($MAX_DATA_LEN * 1.30 * 2) + 1));
 
+    if ($data_length < 64) # minimum length required by hashcat's tokenizer
+    {
+      next;
+    }
+
     my $random_length = $data_length - length ($data_buf);
 
     if ($random_length > 0)
