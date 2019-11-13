@@ -8,6 +8,36 @@
 
 #include "ext_secp256k1.h"
 
+
+// some macros needed for secp256k1 header and source code includes:
+
+// is this a good 64-bit support check ?
+#if !defined(__LP64__) && !defined(_WIN64) && !defined(__x86_64__)
+
+#define USE_SCALAR_8X32
+#define USE_FIELD_10X26
+
+#else
+
+#define HAVE___INT128
+#define USE_ASM_X86_64
+// doesn't change speed much: #define USE_ECMULT_STATIC_PRECOMPUTATION
+
+#define USE_SCALAR_4X64
+#define USE_FIELD_5X52
+
+#endif
+
+#define USE_SCALAR_INV_BUILTIN
+#define USE_FIELD_INV_BUILTIN
+
+#define ECMULT_WINDOW_SIZE   15
+#define ECMULT_GEN_PREC_BITS  4
+
+// /END of the general secp256k1 macros
+
+
+
 #if !defined (WITH_LIBSECP256K1)
 
 // using GMP or mini-gmp would be perfect, but GNU MP (GMPLIB) is dual licensed under LGPL/GPL,
@@ -27,18 +57,18 @@
 
 #define USE_NUM_NONE
 
-//#define HAVE___INT128
-
-#define USE_SCALAR_8X32
-#define USE_SCALAR_INV_BUILTIN
-
-#define USE_FIELD_10X26
-#define USE_FIELD_INV_BUILTIN
-
-#define ECMULT_WINDOW_SIZE   15
-#define ECMULT_GEN_PREC_BITS  4
-
 #include "secp256k1.c"
+
+#else
+
+// WITH_LIBSECP256K1
+
+#define USE_NUM_GMP
+
+#include "util.h"
+#include "num_gmp_impl.h"
+#include "scalar.h"
+#include "scalar_impl.h"
 
 #endif
 
@@ -58,13 +88,13 @@ bool hc_secp256k1_pubkey_parse (secp256k1_pubkey *pubkey, u8 *buf, size_t length
   return true;
 }
 
-bool hc_secp256k1_pubkey_tweak_mul (secp256k1_pubkey pubkey, u8 *buf, size_t length)
+bool hc_secp256k1_pubkey_tweak_mul (secp256k1_pubkey *pubkey, u8 *buf, size_t length)
 {
   secp256k1_context *sctx = secp256k1_context_create (SECP256K1_CONTEXT_VERIFY);
 
-  if (secp256k1_ec_pubkey_tweak_mul (sctx, &pubkey, buf) == 0) return false;
+  if (secp256k1_ec_pubkey_tweak_mul (sctx, pubkey, buf) == 0) return false;
 
-  secp256k1_ec_pubkey_serialize (sctx, buf, &length, &pubkey, SECP256K1_EC_COMPRESSED);
+  secp256k1_ec_pubkey_serialize (sctx, buf, &length, pubkey, SECP256K1_EC_COMPRESSED);
 
   secp256k1_context_destroy (sctx);
 
@@ -138,7 +168,6 @@ void hc_secp256k1_bignum_mod (const u8 *in, const u8 in_len, u8 *out, const u8 o
   }
 }
 #else
-
 void hc_secp256k1_bignum_mod (const u8 *in, const u8 in_len, u8 *out, const u8 out_len)
 {
   // divisor:
@@ -213,17 +242,6 @@ void hc_secp256k1_bignum_mod (const u8 *in, const u8 in_len, u8 *out, const u8 o
 #else
 // Alternative by using secp256k1_scalar_order_get_num () and secp256k1_scalar_order_get_num () with GMPLIB:
 
-#include "util.h"
-
-#define USE_NUM_GMP
-#include "num_gmp_impl.h"
-
-#define USE_SCALAR_8X32
-#include "scalar.h"
-
-#define USE_SCALAR_INV_BUILTIN
-#include "scalar_impl.h"
-
 void hc_secp256k1_bignum_mod (const u8 *in, const u8 in_len, u8 *out, const u8 out_len)
 {
   secp256k1_num num;
@@ -256,25 +274,16 @@ void hc_secp256k1_bignum_mod (const u8 *in, const u8 in_len, u8 *out, const u8 o
 
 #if !defined (WITH_GMPLIB)
 #if !defined (WITH_LIBSECP256K1)
-// #define HAVE___INT128
 #include "util.h"
 
 #define USE_NUM_GMP
+
 #include "num_gmp_impl.h"
-
-#define USE_SCALAR_8X32
 #include "scalar.h"
-
-#define USE_SCALAR_INV_BUILTIN
 #include "scalar_impl.h"
-
-#define USE_FIELD_10X26
-#define USE_FIELD_INV_NUM
-
-#define ECMULT_WINDOW_SIZE   15
-#define ECMULT_GEN_PREC_BITS  4
-
 #include "secp256k1.c"
+
+#endif
 #endif
 
 // => after this we call the libsecp256k1 compatible function with secp256k1_num_mod ()

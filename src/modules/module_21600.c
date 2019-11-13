@@ -170,7 +170,7 @@ void module_hook23 (hc_device_param_t *device_param, const void *hook_salts_buf,
 
   length++; // NOT a bug (32 + 1 for the sign)
 
-  bool multiply_success = hc_secp256k1_pubkey_tweak_mul (pubkey, tmp_buf, length);
+  bool multiply_success = hc_secp256k1_pubkey_tweak_mul (&pubkey, tmp_buf, length);
 
   if (multiply_success == false) return;
 
