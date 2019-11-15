@@ -11,13 +11,8 @@ ENABLE_BRAIN            := 1
 USE_SYSTEM_LZMA         := 0
 USE_SYSTEM_ZLIB         := 0
 USE_SYSTEM_LIBSECP256K1 := 0
-USE_SYSTEM_GMPLIB       := 0
 USE_SYSTEM_OPENCL       := 0
 USE_SYSTEM_XXHASH       := 0
-
-# Note: USE_SYSTEM_GMPLIB is only useful for libsecp256k1 if USE_SYSTEM_LIBSECP256K1 is 0
-# there is a slight problem of using the system libsecp256k1 and/or gmplib for distribution of hashcat:
-# the GNU LGPL/GPL licenses have some implications for how the binary can be used (MIT vs GNU licenses)
 
 ##
 ## Detect Operating System
@@ -240,26 +235,21 @@ LFLAGS                  += -lz
 endif
 
 # LIBSECP256K1
-CFLAGS_LIBSECP256K1     += -I$(DEPS_LIBSECP256K1_PATH)
-CFLAGS_LIBSECP256K1     += -Ideps/secp256k1/src/
 
 ifeq ($(USE_SYSTEM_LIBSECP256K1),1)
 LFLAGS                  += -lsecp256k1
 CFLAGS_LIBSECP256K1     += -DWITH_LIBSECP256K1
+
+# NOT working if used only in CFLAGS_LIBSECP256K1 because we need to include secp256k1.h in the module too
+CFLAGS                  += -I$(DEPS_LIBSECP256K1_PATH)
 else
+CFLAGS_LIBSECP256K1     += -I$(DEPS_LIBSECP256K1_PATH)/src/
+
+# files in deps/secp256k1/ include "include/secp256k1.h" so we need the parent folder too
+CFLAGS_LIBSECP256K1     += -I$(DEPS_LIBSECP256K1_PATH)
+
 # NOT working if used only in CFLAGS_LIBSECP256K1 because we need to include secp256k1.h in the module too
 CFLAGS                  += -I$(DEPS_LIBSECP256K1_PATH)/include/
-
-ifeq ($(USE_SYSTEM_GMPLIB),1)
-$(warning "! GMPLIB (GNU MP) is dual licensed under LGPLv3/GPLv2,")
-$(warning " which has some implications for how the hashcat binary can be used etc")
-$(warning " If in doubt, compile with the IMath alternative instead")
-LFLAGS                  += -lgmp
-CFLAGS_LIBSECP256K1     += -DWITH_GMPLIB
-else
-DEPS_GMPLIB_PATH        := deps/imath/
-CFLAGS_LIBSECP256K1     += -I$(DEPS_GMPLIB_PATH)
-endif
 endif
 
 # OpenCL

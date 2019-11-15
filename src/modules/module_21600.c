@@ -61,7 +61,7 @@ typedef struct electrum_tmp
 
 typedef struct
 {
-  u64 ukey[8];
+  u32 ukey[8];
 
   u32 hook_success;
 
@@ -106,63 +106,25 @@ void module_hook23 (hc_device_param_t *device_param, const void *hook_salts_buf,
 
   hook_item->hook_success = 0;
 
-  const u64 *ukey_64 = (const u64 *) hook_item->ukey;
+  u32 ukey[9]; // (32 + 1) + 3 = 9 * 4 = 36 bytes (+1 for holding the "sign" of the curve point)
 
-  u32 ukey[16];
-
-  ukey[ 0] = v32b_from_v64 (ukey_64[0]);
-  ukey[ 1] = v32a_from_v64 (ukey_64[0]);
-  ukey[ 2] = v32b_from_v64 (ukey_64[1]);
-  ukey[ 3] = v32a_from_v64 (ukey_64[1]);
-
-  ukey[ 4] = v32b_from_v64 (ukey_64[2]);
-  ukey[ 5] = v32a_from_v64 (ukey_64[2]);
-  ukey[ 6] = v32b_from_v64 (ukey_64[3]);
-  ukey[ 7] = v32a_from_v64 (ukey_64[3]);
-
-  ukey[ 8] = v32b_from_v64 (ukey_64[4]);
-  ukey[ 9] = v32a_from_v64 (ukey_64[4]);
-  ukey[10] = v32b_from_v64 (ukey_64[5]);
-  ukey[11] = v32a_from_v64 (ukey_64[5]);
-
-  ukey[12] = v32b_from_v64 (ukey_64[6]);
-  ukey[13] = v32a_from_v64 (ukey_64[6]);
-  ukey[14] = v32b_from_v64 (ukey_64[7]);
-  ukey[15] = v32a_from_v64 (ukey_64[7]);
-
-  ukey[ 0] = byte_swap_32 (ukey[ 0]);
-  ukey[ 1] = byte_swap_32 (ukey[ 1]);
-  ukey[ 2] = byte_swap_32 (ukey[ 2]);
-  ukey[ 3] = byte_swap_32 (ukey[ 3]);
-
-  ukey[ 4] = byte_swap_32 (ukey[ 4]);
-  ukey[ 5] = byte_swap_32 (ukey[ 5]);
-  ukey[ 6] = byte_swap_32 (ukey[ 6]);
-  ukey[ 7] = byte_swap_32 (ukey[ 7]);
-
-  ukey[ 8] = byte_swap_32 (ukey[ 8]);
-  ukey[ 9] = byte_swap_32 (ukey[ 9]);
-  ukey[10] = byte_swap_32 (ukey[10]);
-  ukey[11] = byte_swap_32 (ukey[11]);
-
-  ukey[12] = byte_swap_32 (ukey[12]);
-  ukey[13] = byte_swap_32 (ukey[13]);
-  ukey[14] = byte_swap_32 (ukey[14]);
-  ukey[15] = byte_swap_32 (ukey[15]);
+  ukey[0] = hook_item->ukey[0];
+  ukey[1] = hook_item->ukey[1];
+  ukey[2] = hook_item->ukey[2];
+  ukey[3] = hook_item->ukey[3];
+  ukey[4] = hook_item->ukey[4];
+  ukey[5] = hook_item->ukey[5];
+  ukey[6] = hook_item->ukey[6];
+  ukey[7] = hook_item->ukey[7];
+  ukey[8] = 0;
 
   /*
    * Start with Elliptic Curve Cryptography (ECC)
    */
 
-  // first step: just reduce the 512-bit key to 256 bits by a bignum modulo operation:
-
-  u8 tmp_buf[33 + 3]; // +3 (instead of +1) to make it a multiple of 4
-
-  memset (tmp_buf, 0, sizeof (tmp_buf));
+  u8 *tmp_buf = (u8 *) ukey;
 
   size_t length = 32;
-
-  hc_secp256k1_bignum_mod ((const u8 *) ukey, 64, tmp_buf, length);
 
   // we need to copy it because the secp256k1_ec_pubkey_tweak_mul () function has side effects
 
@@ -180,7 +142,7 @@ void module_hook23 (hc_device_param_t *device_param, const void *hook_salts_buf,
 
   u32 *output_ptr = (u32 *) tmp_buf;
 
-  for (size_t z = 0; z < sizeof (tmp_buf) / 4; z++)
+  for (size_t z = 0; z < 9; z++) // sizeof (ukey) / 4 == 9
   {
     input[z] = byte_swap_32 (output_ptr[z]);
   }

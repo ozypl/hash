@@ -26,7 +26,7 @@ typedef struct electrum_tmp
 
 typedef struct
 {
-  u64 ukey[8];
+  u32 ukey[8];
 
   u32 hook_success;
 
@@ -316,18 +316,310 @@ KERNEL_FQ void m21600_hook23 (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hoo
 
   if (gid >= gid_max) return;
 
-  /**
-   * copy digest to hook buffer
+  u64 out[8];
+
+  out[0] = tmps[gid].out[0];
+  out[1] = tmps[gid].out[1];
+  out[2] = tmps[gid].out[2];
+  out[3] = tmps[gid].out[3];
+  out[4] = tmps[gid].out[4];
+  out[5] = tmps[gid].out[5];
+  out[6] = tmps[gid].out[6];
+  out[7] = tmps[gid].out[7];
+
+  // we need to perform a modulo operation with 512-bit % 256-bit (bignum modulo):
+  // the modulus is the secp256k1 group order
+
+  /*
+    the general modulo by shift and substract code (a = a % b):
+
+    x = b;
+
+    t = a >> 1;
+
+    while (x <= t) x <<= 1;
+
+    while (a >= b)
+    {
+      if (a >= x) a -= x;
+
+      x >>= 1;
+    }
+
+    return a; // remainder
+  */
+
+  u32 a[16];
+
+  a[ 0] = h32_from_64_S (out[ 0]);
+  a[ 1] = l32_from_64_S (out[ 0]);
+  a[ 2] = h32_from_64_S (out[ 1]);
+  a[ 3] = l32_from_64_S (out[ 1]);
+  a[ 4] = h32_from_64_S (out[ 2]);
+  a[ 5] = l32_from_64_S (out[ 2]);
+  a[ 6] = h32_from_64_S (out[ 3]);
+  a[ 7] = l32_from_64_S (out[ 3]);
+  a[ 8] = h32_from_64_S (out[ 4]);
+  a[ 9] = l32_from_64_S (out[ 4]);
+  a[10] = h32_from_64_S (out[ 5]);
+  a[11] = l32_from_64_S (out[ 5]);
+  a[12] = h32_from_64_S (out[ 6]);
+  a[13] = l32_from_64_S (out[ 6]);
+  a[14] = h32_from_64_S (out[ 7]);
+  a[15] = l32_from_64_S (out[ 7]);
+
+  u32 b[16];
+
+  b[ 0] = 0x00000000; // can we take advantage of all these zeros?
+  b[ 1] = 0x00000000;
+  b[ 2] = 0x00000000;
+  b[ 3] = 0x00000000;
+  b[ 4] = 0x00000000;
+  b[ 5] = 0x00000000;
+  b[ 6] = 0x00000000;
+  b[ 7] = 0x00000000;
+  b[ 8] = 0xffffffff; // can we take advantage of these 0xff ?
+  b[ 9] = 0xffffffff;
+  b[10] = 0xffffffff;
+  b[11] = 0xfffffffe;
+  b[12] = 0xbaaedce6;
+  b[13] = 0xaf48a03b;
+  b[14] = 0xbfd25e8c;
+  b[15] = 0xd0364141;
+
+  /*
+   * Start:
    */
 
-  hooks[gid].ukey[0] = tmps[gid].out[0];
-  hooks[gid].ukey[1] = tmps[gid].out[1];
-  hooks[gid].ukey[2] = tmps[gid].out[2];
-  hooks[gid].ukey[3] = tmps[gid].out[3];
-  hooks[gid].ukey[4] = tmps[gid].out[4];
-  hooks[gid].ukey[5] = tmps[gid].out[5];
-  hooks[gid].ukey[6] = tmps[gid].out[6];
-  hooks[gid].ukey[7] = tmps[gid].out[7];
+  // x = b (temporary copy that we modify to keep original number b AS-IS)
+
+  u32 x[16];
+
+  x[ 0] = b[ 0];
+  x[ 1] = b[ 1];
+  x[ 2] = b[ 2];
+  x[ 3] = b[ 3];
+  x[ 4] = b[ 4];
+  x[ 5] = b[ 5];
+  x[ 6] = b[ 6];
+  x[ 7] = b[ 7];
+  x[ 8] = b[ 8];
+  x[ 9] = b[ 9];
+  x[10] = b[10];
+  x[11] = b[11];
+  x[12] = b[12];
+  x[13] = b[13];
+  x[14] = b[14];
+  x[15] = b[15];
+
+  // t = a >> 1 (or a / 2)
+
+  u32 t[16];
+
+  t[15] = a[15] >> 1 | (a[14] & 1) << 31;
+  t[14] = a[14] >> 1 | (a[13] & 1) << 31;
+  t[13] = a[13] >> 1 | (a[12] & 1) << 31;
+  t[12] = a[12] >> 1 | (a[11] & 1) << 31;
+  t[11] = a[11] >> 1 | (a[10] & 1) << 31;
+  t[10] = a[10] >> 1 | (a[ 9] & 1) << 31;
+  t[ 9] = a[ 9] >> 1 | (a[ 8] & 1) << 31;
+  t[ 8] = a[ 8] >> 1 | (a[ 7] & 1) << 31;
+  t[ 7] = a[ 7] >> 1 | (a[ 6] & 1) << 31;
+  t[ 6] = a[ 6] >> 1 | (a[ 5] & 1) << 31;
+  t[ 5] = a[ 5] >> 1 | (a[ 4] & 1) << 31;
+  t[ 4] = a[ 4] >> 1 | (a[ 3] & 1) << 31;
+  t[ 3] = a[ 3] >> 1 | (a[ 2] & 1) << 31;
+  t[ 2] = a[ 2] >> 1 | (a[ 1] & 1) << 31;
+  t[ 1] = a[ 1] >> 1 | (a[ 0] & 1) << 31;
+  t[ 0] = a[ 0] >> 1;
+
+  // the following code could maybe be improved by detecting the most-significant bits instead of looping:
+  // x <<= 1 while x <= t
+
+  while (x[0] <= t[0])
+  {
+    if (x[ 0] == t[ 0]) if (x[ 1] > t[ 1]) break;
+    if (x[ 1] == t[ 1]) if (x[ 2] > t[ 2]) break;
+    if (x[ 2] == t[ 2]) if (x[ 3] > t[ 3]) break;
+    if (x[ 3] == t[ 3]) if (x[ 4] > t[ 4]) break;
+    if (x[ 4] == t[ 4]) if (x[ 5] > t[ 5]) break;
+    if (x[ 5] == t[ 5]) if (x[ 6] > t[ 6]) break;
+    if (x[ 6] == t[ 6]) if (x[ 7] > t[ 7]) break;
+    if (x[ 7] == t[ 7]) if (x[ 8] > t[ 8]) break;
+    if (x[ 8] == t[ 8]) if (x[ 9] > t[ 9]) break;
+    if (x[ 9] == t[ 9]) if (x[10] > t[10]) break;
+    if (x[10] == t[10]) if (x[11] > t[11]) break;
+    if (x[11] == t[11]) if (x[12] > t[12]) break;
+    if (x[12] == t[12]) if (x[13] > t[13]) break;
+    if (x[13] == t[13]) if (x[14] > t[14]) break;
+    if (x[14] == t[14]) if (x[15] > t[15]) break;
+
+    // x <<= 1
+
+    x[ 0] = x[ 0] << 1 | (x[ 1] & 0x80000000) >> 31;
+    x[ 1] = x[ 1] << 1 | (x[ 2] & 0x80000000) >> 31;
+    x[ 2] = x[ 2] << 1 | (x[ 3] & 0x80000000) >> 31;
+    x[ 3] = x[ 3] << 1 | (x[ 4] & 0x80000000) >> 31;
+    x[ 4] = x[ 4] << 1 | (x[ 5] & 0x80000000) >> 31;
+    x[ 5] = x[ 5] << 1 | (x[ 6] & 0x80000000) >> 31;
+    x[ 6] = x[ 6] << 1 | (x[ 7] & 0x80000000) >> 31;
+    x[ 7] = x[ 7] << 1 | (x[ 8] & 0x80000000) >> 31;
+    x[ 8] = x[ 8] << 1 | (x[ 9] & 0x80000000) >> 31;
+    x[ 9] = x[ 9] << 1 | (x[10] & 0x80000000) >> 31;
+    x[10] = x[10] << 1 | (x[11] & 0x80000000) >> 31;
+    x[11] = x[11] << 1 | (x[12] & 0x80000000) >> 31;
+    x[12] = x[12] << 1 | (x[13] & 0x80000000) >> 31;
+    x[13] = x[13] << 1 | (x[14] & 0x80000000) >> 31;
+    x[14] = x[14] << 1 | (x[15] & 0x80000000) >> 31;
+    x[15] = x[15] << 1;
+  }
+
+  // a >= b
+
+  while (a[0] >= b[0])
+  {
+    if (a[ 0] == b[ 0]) if (a[ 1] < b[ 1]) break;
+    if (a[ 1] == b[ 1]) if (a[ 2] < b[ 2]) break;
+    if (a[ 2] == b[ 2]) if (a[ 3] < b[ 3]) break;
+    if (a[ 3] == b[ 3]) if (a[ 4] < b[ 4]) break;
+    if (a[ 4] == b[ 4]) if (a[ 5] < b[ 5]) break;
+    if (a[ 5] == b[ 5]) if (a[ 6] < b[ 6]) break;
+    if (a[ 6] == b[ 6]) if (a[ 7] < b[ 7]) break;
+    if (a[ 7] == b[ 7]) if (a[ 8] < b[ 8]) break;
+    if (a[ 8] == b[ 8]) if (a[ 9] < b[ 9]) break;
+    if (a[ 9] == b[ 9]) if (a[10] < b[10]) break;
+    if (a[10] == b[10]) if (a[11] < b[11]) break;
+    if (a[11] == b[11]) if (a[12] < b[12]) break;
+    if (a[12] == b[12]) if (a[13] < b[13]) break;
+    if (a[13] == b[13]) if (a[14] < b[14]) break;
+    if (a[14] == b[14]) if (a[15] < b[15]) break;
+
+    // r = x (copy it to have the original values for the subtraction)
+
+    u32 r[16];
+
+    r[ 0] = x[ 0];
+    r[ 1] = x[ 1];
+    r[ 2] = x[ 2];
+    r[ 3] = x[ 3];
+    r[ 4] = x[ 4];
+    r[ 5] = x[ 5];
+    r[ 6] = x[ 6];
+    r[ 7] = x[ 7];
+    r[ 8] = x[ 8];
+    r[ 9] = x[ 9];
+    r[10] = x[10];
+    r[11] = x[11];
+    r[12] = x[12];
+    r[13] = x[13];
+    r[14] = x[14];
+    r[15] = x[15];
+
+    // x >>= 1
+
+    x[15] = x[15] >> 1 | (x[14] & 1) << 31;
+    x[14] = x[14] >> 1 | (x[13] & 1) << 31;
+    x[13] = x[13] >> 1 | (x[12] & 1) << 31;
+    x[12] = x[12] >> 1 | (x[11] & 1) << 31;
+    x[11] = x[11] >> 1 | (x[10] & 1) << 31;
+    x[10] = x[10] >> 1 | (x[ 9] & 1) << 31;
+    x[ 9] = x[ 9] >> 1 | (x[ 8] & 1) << 31;
+    x[ 8] = x[ 8] >> 1 | (x[ 7] & 1) << 31;
+    x[ 7] = x[ 7] >> 1 | (x[ 6] & 1) << 31;
+    x[ 6] = x[ 6] >> 1 | (x[ 5] & 1) << 31;
+    x[ 5] = x[ 5] >> 1 | (x[ 4] & 1) << 31;
+    x[ 4] = x[ 4] >> 1 | (x[ 3] & 1) << 31;
+    x[ 3] = x[ 3] >> 1 | (x[ 2] & 1) << 31;
+    x[ 2] = x[ 2] >> 1 | (x[ 1] & 1) << 31;
+    x[ 1] = x[ 1] >> 1 | (x[ 0] & 1) << 31;
+    x[ 0] = x[ 0] >> 1;
+
+    // if (a >= r) a -= r;
+
+                        if (a[ 0] < r[ 0]) continue;
+    if (a[ 0] == r[ 0]) if (a[ 1] < r[ 1]) continue;
+    if (a[ 1] == r[ 1]) if (a[ 2] < r[ 2]) continue;
+    if (a[ 2] == r[ 2]) if (a[ 3] < r[ 3]) continue;
+    if (a[ 3] == r[ 3]) if (a[ 4] < r[ 4]) continue;
+    if (a[ 4] == r[ 4]) if (a[ 5] < r[ 5]) continue;
+    if (a[ 5] == r[ 5]) if (a[ 6] < r[ 6]) continue;
+    if (a[ 6] == r[ 6]) if (a[ 7] < r[ 7]) continue;
+    if (a[ 7] == r[ 7]) if (a[ 8] < r[ 8]) continue;
+    if (a[ 8] == r[ 8]) if (a[ 9] < r[ 9]) continue;
+    if (a[ 9] == r[ 9]) if (a[10] < r[10]) continue;
+    if (a[10] == r[10]) if (a[11] < r[11]) continue;
+    if (a[11] == r[11]) if (a[12] < r[12]) continue;
+    if (a[12] == r[12]) if (a[13] < r[13]) continue;
+    if (a[13] == r[13]) if (a[14] < r[14]) continue;
+    if (a[14] == r[14]) if (a[15] < r[15]) continue;
+
+    // substract (a -= r):
+
+    r[ 0] = a[ 0] - r[ 0];
+    r[ 1] = a[ 1] - r[ 1];
+    r[ 2] = a[ 2] - r[ 2];
+    r[ 3] = a[ 3] - r[ 3];
+    r[ 4] = a[ 4] - r[ 4];
+    r[ 5] = a[ 5] - r[ 5];
+    r[ 6] = a[ 6] - r[ 6];
+    r[ 7] = a[ 7] - r[ 7];
+    r[ 8] = a[ 8] - r[ 8];
+    r[ 9] = a[ 9] - r[ 9];
+    r[10] = a[10] - r[10];
+    r[11] = a[11] - r[11];
+    r[12] = a[12] - r[12];
+    r[13] = a[13] - r[13];
+    r[14] = a[14] - r[14];
+    r[15] = a[15] - r[15];
+
+    // take care of the "borrow" (we can't do it the other way around 15...1 because r[x] is changed!)
+
+    if (r[ 1] > a[ 1]) r[ 0]--;
+    if (r[ 2] > a[ 2]) r[ 1]--;
+    if (r[ 3] > a[ 3]) r[ 2]--;
+    if (r[ 4] > a[ 4]) r[ 3]--;
+    if (r[ 5] > a[ 5]) r[ 4]--;
+    if (r[ 6] > a[ 6]) r[ 5]--;
+    if (r[ 7] > a[ 7]) r[ 6]--;
+    if (r[ 8] > a[ 8]) r[ 7]--;
+    if (r[ 9] > a[ 9]) r[ 8]--;
+    if (r[10] > a[10]) r[ 9]--;
+    if (r[11] > a[11]) r[10]--;
+    if (r[12] > a[12]) r[11]--;
+    if (r[13] > a[13]) r[12]--;
+    if (r[14] > a[14]) r[13]--;
+    if (r[15] > a[15]) r[14]--;
+
+    a[ 0] = r[ 0];
+    a[ 1] = r[ 1];
+    a[ 2] = r[ 2];
+    a[ 3] = r[ 3];
+    a[ 4] = r[ 4];
+    a[ 5] = r[ 5];
+    a[ 6] = r[ 6];
+    a[ 7] = r[ 7];
+    a[ 8] = r[ 8];
+    a[ 9] = r[ 9];
+    a[10] = r[10];
+    a[11] = r[11];
+    a[12] = r[12];
+    a[13] = r[13];
+    a[14] = r[14];
+    a[15] = r[15];
+  }
+
+  /**
+   * copy the last 256 bit (32 bytes) of modulo (a) to the hook buffer
+   */
+
+  hooks[gid].ukey[0] = hc_swap32_S (a[ 8]);
+  hooks[gid].ukey[1] = hc_swap32_S (a[ 9]);
+  hooks[gid].ukey[2] = hc_swap32_S (a[10]);
+  hooks[gid].ukey[3] = hc_swap32_S (a[11]);
+  hooks[gid].ukey[4] = hc_swap32_S (a[12]);
+  hooks[gid].ukey[5] = hc_swap32_S (a[13]);
+  hooks[gid].ukey[6] = hc_swap32_S (a[14]);
+  hooks[gid].ukey[7] = hc_swap32_S (a[15]);
 }
 
 KERNEL_FQ void m21600_comp (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hook_t))
