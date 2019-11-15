@@ -176,7 +176,7 @@ sub module_generate_hash
 
     my $zlib_rate = ord (substr ($compressed_data, 2, 1)) & 0x07;
 
-    if (int (length ($compressed_data) + 15 / 16) > $MAX_DATA_LEN)
+    if ((length ($compressed_data) + 15) > $MAX_DATA_LEN)
     {
       $version = 5;
 
