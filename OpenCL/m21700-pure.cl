@@ -11,8 +11,18 @@
 #include "inc_platform.cl"
 #include "inc_common.cl"
 #include "inc_simd.cl"
+#include "inc_hash_sha256.cl"
 #include "inc_hash_sha512.cl"
 #endif
+
+#define COMPARE_M "inc_comp_multi.cl"
+
+typedef struct electrum
+{
+  u32 data_buf[4096];
+  u32 data_len;
+
+} electrum_t;
 
 typedef struct electrum_tmp
 {
@@ -27,6 +37,8 @@ typedef struct electrum_tmp
 typedef struct
 {
   u32 ukey[8];
+
+  u32 pubkey[9]; // 32 + 1 bytes (for sign of the curve point)
 
   u32 hook_success;
 
@@ -90,7 +102,7 @@ DECLSPEC void hmac_sha512_run_V (u32x *w0, u32x *w1, u32x *w2, u32x *w3, u32x *w
   sha512_transform_vector (w0, w1, w2, w3, w4, w5, w6, w7, digest);
 }
 
-KERNEL_FQ void m21600_init (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hook_t))
+KERNEL_FQ void m21700_init (KERN_ATTR_TMPS_HOOKS_ESALT (electrum_tmp_t, electrum_hook_t, electrum_t))
 {
   /**
    * base
@@ -187,7 +199,7 @@ KERNEL_FQ void m21600_init (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hook_
   tmps[gid].out[7] = tmps[gid].dgst[7];
 }
 
-KERNEL_FQ void m21600_loop (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hook_t))
+KERNEL_FQ void m21700_loop (KERN_ATTR_TMPS_HOOKS_ESALT (electrum_tmp_t, electrum_hook_t, electrum_t))
 {
   const u64 gid = get_global_id (0);
 
@@ -310,7 +322,7 @@ KERNEL_FQ void m21600_loop (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hook_
   unpack64v (tmps, out, gid, 7, out[7]);
 }
 
-KERNEL_FQ void m21600_hook23 (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hook_t))
+KERNEL_FQ void m21700_hook23 (KERN_ATTR_TMPS_HOOKS_ESALT (electrum_tmp_t, electrum_hook_t, electrum_t))
 {
   const u64 gid = get_global_id (0);
 
@@ -351,26 +363,26 @@ KERNEL_FQ void m21600_hook23 (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hoo
 
   u32 a[16];
 
-  a[ 0] = h32_from_64_S (out[ 0]);
-  a[ 1] = l32_from_64_S (out[ 0]);
-  a[ 2] = h32_from_64_S (out[ 1]);
-  a[ 3] = l32_from_64_S (out[ 1]);
-  a[ 4] = h32_from_64_S (out[ 2]);
-  a[ 5] = l32_from_64_S (out[ 2]);
-  a[ 6] = h32_from_64_S (out[ 3]);
-  a[ 7] = l32_from_64_S (out[ 3]);
-  a[ 8] = h32_from_64_S (out[ 4]);
-  a[ 9] = l32_from_64_S (out[ 4]);
-  a[10] = h32_from_64_S (out[ 5]);
-  a[11] = l32_from_64_S (out[ 5]);
-  a[12] = h32_from_64_S (out[ 6]);
-  a[13] = l32_from_64_S (out[ 6]);
-  a[14] = h32_from_64_S (out[ 7]);
-  a[15] = l32_from_64_S (out[ 7]);
+  a[ 0] = h32_from_64_S (out[0]);
+  a[ 1] = l32_from_64_S (out[0]);
+  a[ 2] = h32_from_64_S (out[1]);
+  a[ 3] = l32_from_64_S (out[1]);
+  a[ 4] = h32_from_64_S (out[2]);
+  a[ 5] = l32_from_64_S (out[2]);
+  a[ 6] = h32_from_64_S (out[3]);
+  a[ 7] = l32_from_64_S (out[3]);
+  a[ 8] = h32_from_64_S (out[4]);
+  a[ 9] = l32_from_64_S (out[4]);
+  a[10] = h32_from_64_S (out[5]);
+  a[11] = l32_from_64_S (out[5]);
+  a[12] = h32_from_64_S (out[6]);
+  a[13] = l32_from_64_S (out[6]);
+  a[14] = h32_from_64_S (out[7]);
+  a[15] = l32_from_64_S (out[7]);
 
   u32 b[16];
 
-  b[ 0] = 0x00000000; // can we take advantage of all these zeros?
+  b[ 0] = 0x00000000;
   b[ 1] = 0x00000000;
   b[ 2] = 0x00000000;
   b[ 3] = 0x00000000;
@@ -378,7 +390,7 @@ KERNEL_FQ void m21600_hook23 (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hoo
   b[ 5] = 0x00000000;
   b[ 6] = 0x00000000;
   b[ 7] = 0x00000000;
-  b[ 8] = 0xffffffff; // can we take advantage of these 0xff ?
+  b[ 8] = 0xffffffff;
   b[ 9] = 0xffffffff;
   b[10] = 0xffffffff;
   b[11] = 0xfffffffe;
@@ -391,88 +403,26 @@ KERNEL_FQ void m21600_hook23 (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hoo
    * Start:
    */
 
-  // x = b (temporary copy that we modify to keep original number b AS-IS)
+  // x = b (but with a fast "shift" trick to avoid the while loop)
 
   u32 x[16];
 
-  x[ 0] = b[ 0];
-  x[ 1] = b[ 1];
-  x[ 2] = b[ 2];
-  x[ 3] = b[ 3];
-  x[ 4] = b[ 4];
-  x[ 5] = b[ 5];
-  x[ 6] = b[ 6];
-  x[ 7] = b[ 7];
-  x[ 8] = b[ 8];
-  x[ 9] = b[ 9];
-  x[10] = b[10];
-  x[11] = b[11];
-  x[12] = b[12];
-  x[13] = b[13];
-  x[14] = b[14];
-  x[15] = b[15];
-
-  // t = a >> 1 (or a / 2)
-
-  u32 t[16];
-
-  t[15] = a[15] >> 1 | (a[14] & 1) << 31;
-  t[14] = a[14] >> 1 | (a[13] & 1) << 31;
-  t[13] = a[13] >> 1 | (a[12] & 1) << 31;
-  t[12] = a[12] >> 1 | (a[11] & 1) << 31;
-  t[11] = a[11] >> 1 | (a[10] & 1) << 31;
-  t[10] = a[10] >> 1 | (a[ 9] & 1) << 31;
-  t[ 9] = a[ 9] >> 1 | (a[ 8] & 1) << 31;
-  t[ 8] = a[ 8] >> 1 | (a[ 7] & 1) << 31;
-  t[ 7] = a[ 7] >> 1 | (a[ 6] & 1) << 31;
-  t[ 6] = a[ 6] >> 1 | (a[ 5] & 1) << 31;
-  t[ 5] = a[ 5] >> 1 | (a[ 4] & 1) << 31;
-  t[ 4] = a[ 4] >> 1 | (a[ 3] & 1) << 31;
-  t[ 3] = a[ 3] >> 1 | (a[ 2] & 1) << 31;
-  t[ 2] = a[ 2] >> 1 | (a[ 1] & 1) << 31;
-  t[ 1] = a[ 1] >> 1 | (a[ 0] & 1) << 31;
-  t[ 0] = a[ 0] >> 1;
-
-  // the following code could maybe be improved by detecting the most-significant bits instead of looping:
-  // x <<= 1 while x <= t
-
-  while (x[0] <= t[0])
-  {
-    if (x[ 0] == t[ 0]) if (x[ 1] > t[ 1]) break;
-    if (x[ 1] == t[ 1]) if (x[ 2] > t[ 2]) break;
-    if (x[ 2] == t[ 2]) if (x[ 3] > t[ 3]) break;
-    if (x[ 3] == t[ 3]) if (x[ 4] > t[ 4]) break;
-    if (x[ 4] == t[ 4]) if (x[ 5] > t[ 5]) break;
-    if (x[ 5] == t[ 5]) if (x[ 6] > t[ 6]) break;
-    if (x[ 6] == t[ 6]) if (x[ 7] > t[ 7]) break;
-    if (x[ 7] == t[ 7]) if (x[ 8] > t[ 8]) break;
-    if (x[ 8] == t[ 8]) if (x[ 9] > t[ 9]) break;
-    if (x[ 9] == t[ 9]) if (x[10] > t[10]) break;
-    if (x[10] == t[10]) if (x[11] > t[11]) break;
-    if (x[11] == t[11]) if (x[12] > t[12]) break;
-    if (x[12] == t[12]) if (x[13] > t[13]) break;
-    if (x[13] == t[13]) if (x[14] > t[14]) break;
-    if (x[14] == t[14]) if (x[15] > t[15]) break;
-
-    // x <<= 1
-
-    x[ 0] = x[ 0] << 1 | (x[ 1] & 0x80000000) >> 31;
-    x[ 1] = x[ 1] << 1 | (x[ 2] & 0x80000000) >> 31;
-    x[ 2] = x[ 2] << 1 | (x[ 3] & 0x80000000) >> 31;
-    x[ 3] = x[ 3] << 1 | (x[ 4] & 0x80000000) >> 31;
-    x[ 4] = x[ 4] << 1 | (x[ 5] & 0x80000000) >> 31;
-    x[ 5] = x[ 5] << 1 | (x[ 6] & 0x80000000) >> 31;
-    x[ 6] = x[ 6] << 1 | (x[ 7] & 0x80000000) >> 31;
-    x[ 7] = x[ 7] << 1 | (x[ 8] & 0x80000000) >> 31;
-    x[ 8] = x[ 8] << 1 | (x[ 9] & 0x80000000) >> 31;
-    x[ 9] = x[ 9] << 1 | (x[10] & 0x80000000) >> 31;
-    x[10] = x[10] << 1 | (x[11] & 0x80000000) >> 31;
-    x[11] = x[11] << 1 | (x[12] & 0x80000000) >> 31;
-    x[12] = x[12] << 1 | (x[13] & 0x80000000) >> 31;
-    x[13] = x[13] << 1 | (x[14] & 0x80000000) >> 31;
-    x[14] = x[14] << 1 | (x[15] & 0x80000000) >> 31;
-    x[15] = x[15] << 1;
-  }
+  x[ 0] = b[ 8]; // this is a trick: we just put the group order's most significant bit all the
+  x[ 1] = b[ 9]; // way to the top to avoid doing the initial: while (x <= t) x <<= 1
+  x[ 2] = b[10];
+  x[ 3] = b[11];
+  x[ 4] = b[12];
+  x[ 5] = b[13];
+  x[ 6] = b[14];
+  x[ 7] = b[15];
+  x[ 8] = 0x00000000;
+  x[ 9] = 0x00000000;
+  x[10] = 0x00000000;
+  x[11] = 0x00000000;
+  x[12] = 0x00000000;
+  x[13] = 0x00000000;
+  x[14] = 0x00000000;
+  x[15] = 0x00000000;
 
   // a >= b
 
@@ -622,7 +572,7 @@ KERNEL_FQ void m21600_hook23 (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hoo
   hooks[gid].ukey[7] = hc_swap32_S (a[15]);
 }
 
-KERNEL_FQ void m21600_comp (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hook_t))
+KERNEL_FQ void m21700_comp (KERN_ATTR_TMPS_HOOKS_ESALT (electrum_tmp_t, electrum_hook_t, electrum_t))
 {
   /**
    * base
@@ -632,13 +582,62 @@ KERNEL_FQ void m21600_comp (KERN_ATTR_TMPS_HOOKS (electrum_tmp_t, electrum_hook_
 
   if (gid >= gid_max) return;
 
-  if (hooks[gid].hook_success == 1)
-  {
-    if (atomic_inc (&hashes_shown[digests_offset]) == 0)
-    {
-      mark_hash (plains_buf, d_return_buf, salt_pos, digests_cnt, 0, digests_offset + 0, gid, 0, 0, 0);
-    }
+  if (hooks[gid].hook_success == 0) return;
 
-    return;
-  }
+  u32 pubkey[64] = { 0 };
+
+  pubkey[0] = hooks[gid].pubkey[0];
+  pubkey[1] = hooks[gid].pubkey[1];
+  pubkey[2] = hooks[gid].pubkey[2];
+  pubkey[3] = hooks[gid].pubkey[3];
+  pubkey[4] = hooks[gid].pubkey[4];
+  pubkey[5] = hooks[gid].pubkey[5];
+  pubkey[6] = hooks[gid].pubkey[6];
+  pubkey[7] = hooks[gid].pubkey[7];
+  pubkey[8] = hooks[gid].pubkey[8];
+
+  sha512_ctx_t sha512_ctx;
+
+  sha512_init        (&sha512_ctx);
+  sha512_update_swap (&sha512_ctx, pubkey, 33); // 33 because of 32 byte curve point + sign
+  sha512_final       (&sha512_ctx);
+
+  /*
+   * sha256-hmac () of the data_buf
+   */
+
+  GLOBAL_AS u32 *data_buf = (GLOBAL_AS u32 *) esalt_bufs[digests_offset].data_buf;
+
+  u32 data_len = esalt_bufs[digests_offset].data_len;
+
+  u32 key[16] = { 0 };
+
+  key[0] = h32_from_64_S (sha512_ctx.h[4]);
+  key[1] = l32_from_64_S (sha512_ctx.h[4]);
+  key[2] = h32_from_64_S (sha512_ctx.h[5]);
+  key[3] = l32_from_64_S (sha512_ctx.h[5]);
+
+  key[4] = h32_from_64_S (sha512_ctx.h[6]);
+  key[5] = l32_from_64_S (sha512_ctx.h[6]);
+  key[6] = h32_from_64_S (sha512_ctx.h[7]);
+  key[7] = l32_from_64_S (sha512_ctx.h[7]);
+
+  sha256_hmac_ctx_t sha256_ctx;
+
+  sha256_hmac_init (&sha256_ctx, key, 32);
+
+  sha256_hmac_update_global_swap (&sha256_ctx, data_buf, data_len);
+
+  sha256_hmac_final (&sha256_ctx);
+
+  const u32 r0 = sha256_ctx.opad.h[0];
+  const u32 r1 = sha256_ctx.opad.h[1];
+  const u32 r2 = sha256_ctx.opad.h[2];
+  const u32 r3 = sha256_ctx.opad.h[3];
+
+  #define il_pos 0
+
+  #ifdef KERNEL_STATIC
+  #include COMPARE_M
+  #endif
 }

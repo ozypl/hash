@@ -12,8 +12,7 @@ use Crypt::PBKDF2;
 use Crypt::OpenSSL::EC;
 use Crypt::OpenSSL::Bignum::CTX;
 
-use Digest::SHA  qw (sha512);
-use Digest::SHA  qw (sha256);
+use Digest::SHA  qw (sha256 sha512);
 use Digest::HMAC qw (hmac_hex);
 
 use Crypt::CBC;
@@ -114,11 +113,9 @@ sub module_generate_hash
 
   while ($valid_point == 0)
   {
-    my $sign_of_curve_point = int (rand (2)); # 2 possibilies: 02... or 03... ephemeral public keys
+    my $sign_of_curve_point = int (rand (2)); # 2 possibilities: 02... or 03... ephemeral public keys
 
     $ephemeral_pubkey = pack ("H*", "0" . ($sign_of_curve_point + 2) . random_hex_string (64));
-
-    # $ephemeral_pubkey = pack ("H*", "0328e536dd1fbbb85d78de1a8c21215d4646cd87d6b6545afcfb203e5bb32e0de4");
 
     $key = generate_key ($word, $ephemeral_pubkey);
 
@@ -132,12 +129,8 @@ sub module_generate_hash
 
   my $compressed_data = "";
 
-  my $version = 4;
-
   while ($valid_compression_rate == 0)
   {
-    $version = 4; # reset if version 5 failed
-
     my $data_buf = "{\r\n    \"";
 
     if (int (rand (2)) == 1) # alternative with different line break
@@ -146,14 +139,8 @@ sub module_generate_hash
     }
 
     # we assume a compression rate of 30% (smaller if compressed)
-    # x * 2 to achieve an almost 50% chance to have the length above vs below limit
 
-    my $data_length = int (rand (($MAX_DATA_LEN * 1.30 * 2) + 1));
-
-    if ($data_length < 64) # minimum length required by hashcat's tokenizer
-    {
-      next;
-    }
+    my $data_length = $MAX_DATA_LEN + int (rand (int ($MAX_DATA_LEN * 1.30 + 1)));
 
     my $random_length = $data_length - length ($data_buf);
 
@@ -172,18 +159,18 @@ sub module_generate_hash
 
     $compressed_data = $header . $compressed_data;
 
-    # second test:
+    # check if data is valid:
+
+    if ((length ($compressed_data) + 15) <= $MAX_DATA_LEN)
+    {
+      next;
+    }
 
     my $zlib_rate = ord (substr ($compressed_data, 2, 1)) & 0x07;
 
-    if ((length ($compressed_data) + 15) > $MAX_DATA_LEN)
+    if ($zlib_rate != 0x05)
     {
-      $version = 5;
-
-      if ($zlib_rate != 0x05)
-      {
-        next;
-      }
+      next;
     }
 
     $valid_compression_rate = 1;
@@ -213,15 +200,13 @@ sub module_generate_hash
 
   my $mac = hmac_hex ($encrypted_data, $hmac_key, \&sha256);
 
-  if ($version == 5) # truncate if version 5
-  {
-    $encrypted_data = substr ($encrypted_data, 0, $TRUNCATE_DATA_LEN);
-  }
+  # truncate for version 5:
+
+  $encrypted_data = substr ($encrypted_data, 0, $TRUNCATE_DATA_LEN);
 
   # format the hash:
 
-  my $hash = sprintf ("\$electrum\$%i*%s*%s*%s",
-    $version,
+  my $hash = sprintf ("\$electrum\$5*%s*%s*%s",
     unpack ("H*", $ephemeral_pubkey),
     unpack ("H*", $encrypted_data),
     $mac
@@ -253,9 +238,7 @@ sub module_verify_hash
 
   my $version = substr ($hash_in, 10, $index2 - 10);
 
-  return if (($version ne "4") && ($version ne "5"));
-
-  $version = int ($version);
+  return if ($version ne "5");
 
 
   # public key:
@@ -291,75 +274,63 @@ sub module_verify_hash
 
   my $key = generate_key ($word, $ephemeral_pubkey);
 
-  if ($version == 4)
+
+  # decrypt the data with AES128
+
+  my $iv      = substr ($key,  0, 16);
+  my $aes_key = substr ($key, 16, 16);
+
+  my $aes = Crypt::CBC->new ({
+    cipher      => "Crypt::Rijndael",
+    keysize     => 16,
+    literal_key => 1,
+    header      => "none",
+    iv          => $iv,
+    key         => $aes_key
+  });
+
+  my $decrypted_data = $aes->decrypt ($data_buf);
+
+
+  # some early reject/validation steps:
+
+  # first test:
+
+  if (substr ($decrypted_data, 0, 2) ne "\x78\x9c")
   {
-    my $hmac_key = substr ($key, 32, 32);
-
-    my $mac_gen = hmac_hex ($data_buf, $hmac_key, \&sha256);
-
-    if ($mac_gen eq $mac)
-    {
-      $new_hash = $hash_in;
-    }
+    return ($new_hash, $word);
   }
-  else # version == 5
+
+  # second test:
+
+  if ((ord (substr ($decrypted_data, 2, 1)) & 0x07) != 0x05)
   {
-    # decrypt the data with AES128
-
-    my $iv      = substr ($key,  0, 16);
-    my $aes_key = substr ($key, 16, 16);
-
-    my $aes = Crypt::CBC->new ({
-      cipher      => "Crypt::Rijndael",
-      keysize     => 16,
-      literal_key => 1,
-      header      => "none",
-      iv          => $iv,
-      key         => $aes_key
-    });
-
-    my $decrypted_data = $aes->decrypt ($data_buf);
-
-
-    # some early reject/validation steps:
-
-    # first test:
-
-    if (substr ($decrypted_data, 0, 2) ne "\x78\x9c")
-    {
-      return ($new_hash, $word);
-    }
-
-    # second test:
-
-    if ((ord (substr ($decrypted_data, 2, 1)) & 0x07) != 0x05)
-    {
-      return ($new_hash, $word);
-    }
-
-
-    # decompress/inflate:
-
-    my $inflator = inflateInit (-WindowBits => MAX_WBITS);
-
-    my ($decompressed_data, $status) = $inflator->inflate ($decrypted_data);
-
-
-    # final validation of data:
-
-    if (length ($status) > 0)
-    {
-      return ($new_hash, $word);
-    }
-
-    if ((substr ($decompressed_data, 0, 7) ne "{\n    \"") &&
-        (substr ($decompressed_data, 0, 8) ne "{\r\n    \""))
-    {
-      return ($new_hash, $word);
-    }
-
-    $new_hash = $hash_in;
+    return ($new_hash, $word);
   }
+
+
+  # decompress/inflate:
+
+  my $inflator = inflateInit (-WindowBits => MAX_WBITS);
+
+  my ($decompressed_data, $status) = $inflator->inflate ($decrypted_data);
+
+
+  # final validation of data:
+
+  if (length ($status) > 0)
+  {
+    return ($new_hash, $word);
+  }
+
+  if ((substr ($decompressed_data, 0, 7) ne "{\n    \"") &&
+      (substr ($decompressed_data, 0, 8) ne "{\r\n    \""))
+  {
+    return ($new_hash, $word);
+  }
+
+  $new_hash = $hash_in;
+
 
   return ($new_hash, $word);
 }

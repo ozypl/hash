@@ -62,7 +62,12 @@ bool hc_secp256k1_pubkey_tweak_mul (secp256k1_pubkey *pubkey, u8 *buf, size_t le
 {
   secp256k1_context *sctx = secp256k1_context_create (SECP256K1_CONTEXT_VERIFY);
 
-  if (secp256k1_ec_pubkey_tweak_mul (sctx, pubkey, buf) == 0) return false;
+  if (secp256k1_ec_pubkey_tweak_mul (sctx, pubkey, buf) == 0)
+  {
+    secp256k1_context_destroy (sctx);
+
+    return false;
+  }
 
   secp256k1_ec_pubkey_serialize (sctx, buf, &length, pubkey, SECP256K1_EC_COMPRESSED);
 

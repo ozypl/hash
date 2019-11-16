@@ -10,21 +10,17 @@
 #include "convert.h"
 #include "shared.h"
 #include "memory.h"
-#include "emu_inc_hash_sha512.h"
-#include "emu_inc_hash_sha256.h"
-#include "emu_inc_cipher_aes.h"
 #include "ext_secp256k1.h"
-#include "zlib.h"
 
 static const u32   ATTACK_EXEC    = ATTACK_EXEC_OUTSIDE_KERNEL;
 static const u32   DGST_POS0      = 0;
 static const u32   DGST_POS1      = 1;
 static const u32   DGST_POS2      = 2;
 static const u32   DGST_POS3      = 3;
-static const u32   DGST_SIZE      = DGST_SIZE_4_4;
+static const u32   DGST_SIZE      = DGST_SIZE_4_8;
 static const u32   HASH_CATEGORY  = HASH_CATEGORY_PASSWORD_MANAGER;
-static const char *HASH_NAME      = "Electrum Wallet (Salt-Type 4-5)";
-static const u64   KERN_TYPE      = 21600;
+static const char *HASH_NAME      = "Electrum Wallet (Salt-Type 4)";
+static const u64   KERN_TYPE      = 21700;
 static const u32   OPTI_TYPE      = OPTI_TYPE_ZERO_BYTE
                                   | OPTI_TYPE_USES_BITS_64
                                   | OPTI_TYPE_SLOW_HASH_SIMD_LOOP;
@@ -49,6 +45,13 @@ u32         module_salt_type      (MAYBE_UNUSED const hashconfig_t *hashconfig, 
 const char *module_st_hash        (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra) { return ST_HASH;         }
 const char *module_st_pass        (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra) { return ST_PASS;         }
 
+typedef struct electrum
+{
+  u32 data_buf[4096];
+  u32 data_len;
+
+} electrum_t;
+
 typedef struct electrum_tmp
 {
   u64  ipad[8];
@@ -63,27 +66,21 @@ typedef struct
 {
   u32 ukey[8];
 
+  u32 pubkey[9]; // 32 + 1 bytes (for sign of the curve point)
+
   u32 hook_success;
 
 } electrum_hook_t;
 
 typedef struct electrum_hook_salt
 {
-  u32 version;
-
-  u32 data_len;
-
-  u32 data_buf[4096];
-
-  u32 mac[8];
-
   u8 ephemeral_pubkey_raw[33];
 
   secp256k1_pubkey ephemeral_pubkey_struct;
 
 } electrum_hook_salt_t;
 
-static const char *SIGNATURE_ELECTRUM = "$electrum$";
+static const char *SIGNATURE_ELECTRUM = "$electrum$4*";
 
 void module_hook23 (hc_device_param_t *device_param, const void *hook_salts_buf, const u32 salt_pos, const u64 pw_pos)
 {
@@ -92,13 +89,9 @@ void module_hook23 (hc_device_param_t *device_param, const void *hook_salts_buf,
   electrum_hook_salt_t *electrums = (electrum_hook_salt_t *) hook_salts_buf;
   electrum_hook_salt_t *electrum  = &electrums[salt_pos];
 
-  u32  version  = electrum->version;
-  u32  data_len = electrum->data_len;
+  // we need to copy it because the secp256k1_ec_pubkey_tweak_mul () function has side effects
 
-  u32 *data_buf = electrum->data_buf;
-  u32 *mac      = electrum->mac;
-
-  secp256k1_pubkey ephemeral_pubkey = electrum->ephemeral_pubkey_struct;
+  secp256k1_pubkey ephemeral_pubkey = electrum->ephemeral_pubkey_struct; // shallow copy is safe !
 
   // this hook data needs to be updated (the "hook_success" variable):
 
@@ -106,232 +99,32 @@ void module_hook23 (hc_device_param_t *device_param, const void *hook_salts_buf,
 
   hook_item->hook_success = 0;
 
-  u32 ukey[9]; // (32 + 1) + 3 = 9 * 4 = 36 bytes (+1 for holding the "sign" of the curve point)
+  u32 *hook_pubkey = hook_item->pubkey;
 
-  ukey[0] = hook_item->ukey[0];
-  ukey[1] = hook_item->ukey[1];
-  ukey[2] = hook_item->ukey[2];
-  ukey[3] = hook_item->ukey[3];
-  ukey[4] = hook_item->ukey[4];
-  ukey[5] = hook_item->ukey[5];
-  ukey[6] = hook_item->ukey[6];
-  ukey[7] = hook_item->ukey[7];
-  ukey[8] = 0;
+  hook_pubkey[0] = hook_item->ukey[0];
+  hook_pubkey[1] = hook_item->ukey[1];
+  hook_pubkey[2] = hook_item->ukey[2];
+  hook_pubkey[3] = hook_item->ukey[3];
+  hook_pubkey[4] = hook_item->ukey[4];
+  hook_pubkey[5] = hook_item->ukey[5];
+  hook_pubkey[6] = hook_item->ukey[6];
+  hook_pubkey[7] = hook_item->ukey[7];
+  hook_pubkey[8] = 0;
 
   /*
    * Start with Elliptic Curve Cryptography (ECC)
    */
 
-  u8 *tmp_buf = (u8 *) ukey;
+  const size_t length = 33; // NOT a bug (32 + 1 for the sign)
 
-  size_t length = 32;
-
-  // we need to copy it because the secp256k1_ec_pubkey_tweak_mul () function has side effects
-
-  secp256k1_pubkey pubkey = ephemeral_pubkey; // the copy of the struct is enough (shallow copy)
-
-  length++; // NOT a bug (32 + 1 for the sign)
-
-  bool multiply_success = hc_secp256k1_pubkey_tweak_mul (&pubkey, tmp_buf, length);
+  bool multiply_success = hc_secp256k1_pubkey_tweak_mul (&ephemeral_pubkey, (u8 *) hook_pubkey, length);
 
   if (multiply_success == false) return;
 
-  u32 input[64];
+  // in this case hook_success set to 1 doesn't mean that we've cracked it, but just that there were
+  // no problems detected by secp256k1_ec_pubkey_tweak_mul ()
 
-  memset (input, 0, sizeof (input));
-
-  u32 *output_ptr = (u32 *) tmp_buf;
-
-  for (size_t z = 0; z < 9; z++) // sizeof (ukey) / 4 == 9
-  {
-    input[z] = byte_swap_32 (output_ptr[z]);
-  }
-
-  sha512_ctx_t sha512_ctx;
-
-  sha512_init   (&sha512_ctx);
-  sha512_update (&sha512_ctx, input, length);
-  sha512_final  (&sha512_ctx);
-
-  // ... now we have the result in sha512_ctx.h[0]...sha512_ctx.h[7]
-
-  // distinguish between salt type 4 (mac verify) and salt type 5 (decrypt and decompress):
-
-  if (version == 4)
-  {
-    u32 hmac_key[16];
-
-    memset (hmac_key, 0, 64);
-
-    hmac_key[0] = v32b_from_v64 (sha512_ctx.h[4]);
-    hmac_key[1] = v32a_from_v64 (sha512_ctx.h[4]);
-
-    hmac_key[2] = v32b_from_v64 (sha512_ctx.h[5]);
-    hmac_key[3] = v32a_from_v64 (sha512_ctx.h[5]);
-
-    hmac_key[4] = v32b_from_v64 (sha512_ctx.h[6]);
-    hmac_key[5] = v32a_from_v64 (sha512_ctx.h[6]);
-
-    hmac_key[6] = v32b_from_v64 (sha512_ctx.h[7]);
-    hmac_key[7] = v32a_from_v64 (sha512_ctx.h[7]);
-
-    sha256_hmac_ctx_t sha256_ctx;
-
-    sha256_hmac_init (&sha256_ctx, hmac_key, 32);
-
-    sha256_hmac_update_swap (&sha256_ctx, data_buf, data_len);
-
-    sha256_hmac_final (&sha256_ctx);
-
-    if ((mac[0] == sha256_ctx.opad.h[0]) &&
-        (mac[1] == sha256_ctx.opad.h[1]) &&
-        (mac[2] == sha256_ctx.opad.h[2]) &&
-        (mac[3] == sha256_ctx.opad.h[3]))
-    {
-      hook_item->hook_success = 1;
-    }
-  }
-  else // if (version == 5)
-  {
-    u32 iv[4];
-
-    iv[0] = v32b_from_v64 (sha512_ctx.h[0]);
-    iv[1] = v32a_from_v64 (sha512_ctx.h[0]);
-    iv[2] = v32b_from_v64 (sha512_ctx.h[1]);
-    iv[3] = v32a_from_v64 (sha512_ctx.h[1]);
-
-    iv[0] = byte_swap_32 (iv[0]);
-    iv[1] = byte_swap_32 (iv[1]);
-    iv[2] = byte_swap_32 (iv[2]);
-    iv[3] = byte_swap_32 (iv[3]);
-
-    u32 key[4];
-
-    key[0] = v32b_from_v64 (sha512_ctx.h[2]);
-    key[1] = v32a_from_v64 (sha512_ctx.h[2]);
-    key[2] = v32b_from_v64 (sha512_ctx.h[3]);
-    key[3] = v32a_from_v64 (sha512_ctx.h[3]);
-
-    key[0] = byte_swap_32 (key[0]);
-    key[1] = byte_swap_32 (key[1]);
-    key[2] = byte_swap_32 (key[2]);
-    key[3] = byte_swap_32 (key[3]);
-
-    // init AES
-
-    AES_KEY aes_key;
-
-    memset (&aes_key, 0, sizeof (aes_key));
-
-    aes128_set_decrypt_key (aes_key.rdk, key, (u32 *) te0, (u32 *) te1, (u32 *) te2, (u32 *) te3, (u32 *) td0, (u32 *) td1, (u32 *) td2, (u32 *) td3);
-
-    int aes_len = 1024; // in my tests (very few) it also worked with only 128 input bytes !
-    // int aes_len = 128;
-
-    u32 data[4];
-    u32 out[4];
-
-    u32 out_full[256]; // 1024 / 4
-
-    // we need to run it at least once:
-
-    data[0] = data_buf[0];
-    data[1] = data_buf[1];
-    data[2] = data_buf[2];
-    data[3] = data_buf[3];
-
-    aes128_decrypt (aes_key.rdk, data, out, (u32 *) td0, (u32 *) td1, (u32 *) td2, (u32 *) td3, (u32 *) td4);
-
-    out[0] ^= iv[0];
-
-    // early reject
-
-    if ((out[0] & 0x0007ffff) != 0x00059c78) return;
-
-    out[1] ^= iv[1];
-    out[2] ^= iv[2];
-    out[3] ^= iv[3];
-
-    out_full[0] = out[0];
-    out_full[1] = out[1];
-    out_full[2] = out[2];
-    out_full[3] = out[3];
-
-    iv[0] = data[0];
-    iv[1] = data[1];
-    iv[2] = data[2];
-    iv[3] = data[3];
-
-    // for aes_len > 16 we need to loop
-
-    for (int i = 16, j = 4; i < aes_len; i += 16, j += 4)
-    {
-      data[0] = data_buf[j + 0];
-      data[1] = data_buf[j + 1];
-      data[2] = data_buf[j + 2];
-      data[3] = data_buf[j + 3];
-
-      aes128_decrypt (aes_key.rdk, data, out, (u32 *) td0, (u32 *) td1, (u32 *) td2, (u32 *) td3, (u32 *) td4);
-
-      out[0] ^= iv[0];
-      out[1] ^= iv[1];
-      out[2] ^= iv[2];
-      out[3] ^= iv[3];
-
-      iv[0] = data[0];
-      iv[1] = data[1];
-      iv[2] = data[2];
-      iv[3] = data[3];
-
-      out_full[j + 0] = out[0];
-      out_full[j + 1] = out[1];
-      out_full[j + 2] = out[2];
-      out_full[j + 3] = out[3];
-    }
-
-    // decompress with zlib:
-
-    size_t  compressed_data_len   = aes_len;
-    u8     *compressed_data       = (u8 *) out_full;
-
-    size_t  decompressed_data_len = 16; // we do NOT need more than first bytes for validation
-    u8     *decompressed_data     = (unsigned char *) hcmalloc (decompressed_data_len);
-
-    z_stream inf;
-
-    inf.zalloc = Z_NULL;
-    inf.zfree  = Z_NULL;
-    inf.opaque = Z_NULL;
-
-    inf.next_in   = compressed_data;
-    inf.avail_in  = compressed_data_len;
-
-    inf.next_out  = decompressed_data;
-    inf.avail_out = decompressed_data_len;
-
-    // inflate:
-
-    inflateInit2 (&inf, MAX_WBITS);
-
-    int zlib_ret = inflate (&inf, Z_NO_FLUSH);
-
-    inflateEnd (&inf);
-
-    if ((zlib_ret != Z_OK) && (zlib_ret != Z_STREAM_END))
-    {
-      hcfree (decompressed_data);
-
-      return;
-    }
-
-    if ((memcmp (decompressed_data, "{\n    \"",   7) == 0) ||
-        (memcmp (decompressed_data, "{\r\n    \"", 8) == 0))
-    {
-      hook_item->hook_success = 1;
-    }
-
-    hcfree (decompressed_data);
-  }
+  hook_item->hook_success = 1;
 }
 
 u64 module_hook_size (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra)
@@ -346,6 +139,13 @@ u64 module_hook_salt_size (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UN
   const u64 hook_salt_size = (const u64) sizeof (electrum_hook_salt_t);
 
   return hook_salt_size;
+}
+
+u64 module_esalt_size (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra)
+{
+  const u64 esalt_size = (const u64) sizeof (electrum_t);
+
+  return esalt_size;
 }
 
 u64 module_tmp_size (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra)
@@ -375,146 +175,111 @@ int module_hash_decode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
 {
   u32 *digest = (u32 *) digest_buf;
 
-  electrum_hook_salt_t *electrum = (electrum_hook_salt_t *) hook_salt_buf;
+  electrum_t *esalt = (electrum_t *) esalt_buf;
+
+  electrum_hook_salt_t *hook = (electrum_hook_salt_t *) hook_salt_buf;
 
   token_t token;
 
-  token.token_cnt  = 5;
+  token.token_cnt  = 4;
 
   token.signatures_cnt    = 1;
   token.signatures_buf[0] = SIGNATURE_ELECTRUM;
 
-  token.len[0]     = 10;
+  token.len[0]     = 12;
   token.attr[0]    = TOKEN_ATTR_FIXED_LENGTH
                    | TOKEN_ATTR_VERIFY_SIGNATURE;
 
   token.sep[1]     = '*';
-  token.len_min[1] = 1;
-  token.len_max[1] = 1;
+  token.len_min[1] = 66;
+  token.len_max[1] = 66;
   token.attr[1]    = TOKEN_ATTR_VERIFY_LENGTH
-                   | TOKEN_ATTR_VERIFY_DIGIT;
+                   | TOKEN_ATTR_VERIFY_HEX;
 
   token.sep[2]     = '*';
-  token.len_min[2] = 66;
-  token.len_max[2] = 66;
+  token.len_min[2] = 128;
+  token.len_max[2] = 32768;
   token.attr[2]    = TOKEN_ATTR_VERIFY_LENGTH
                    | TOKEN_ATTR_VERIFY_HEX;
 
   token.sep[3]     = '*';
-  token.len_min[3] = 128;
-  token.len_max[3] = 32768;
+  token.len_min[3] = 64;
+  token.len_max[3] = 64;
   token.attr[3]    = TOKEN_ATTR_VERIFY_LENGTH
-                   | TOKEN_ATTR_VERIFY_HEX;
-
-  token.sep[4]     = '*';
-  token.len_min[4] = 64;
-  token.len_max[4] = 64;
-  token.attr[4]    = TOKEN_ATTR_VERIFY_LENGTH
                    | TOKEN_ATTR_VERIFY_HEX;
 
   const int rc_tokenizer = input_tokenizer ((const u8 *) line_buf, line_len, &token);
 
   if (rc_tokenizer != PARSER_OK) return (rc_tokenizer);
 
-  const u8 *version_pos   = token.buf[1];
-  const u8 *ephemeral_pos = token.buf[2];
-  const u8 *data_buf_pos  = token.buf[3];
-  const u8 *mac_pos       = token.buf[4];
+  const u8 *ephemeral_pos = token.buf[1];
+  const u8 *data_buf_pos  = token.buf[2];
+  const u8 *mac_pos       = token.buf[3];
 
-  const u32 version = hc_strtoul ((const char *) version_pos, NULL, 10);
-
-  const u32 data_len = token.len[3] / 2;
-
-  /**
-   * verify the version number
-   */
-
-  if ((version != 4) && (version != 5))
-  {
-    return (PARSER_SALT_VALUE);
-  }
-
-  /**
-   * version 5 should be always 1024 raw bytes
-   */
-
-  if (version == 5)
-  {
-    if (data_len != 1024)
-    {
-      return (PARSER_SALT_VALUE);
-    }
-  }
+  const u32 data_len = token.len[2] / 2;
 
   /**
    * store data
    */
 
-  // version:
+  // data_len:
 
-  electrum->data_len = data_len;
-
-  // version:
-
-  electrum->version = version;
+  esalt->data_len = data_len;
 
   // ephemeral pubkey:
 
   for (u32 i = 0, j = 0; j < 66; i += 1, j += 2)
   {
-    electrum->ephemeral_pubkey_raw[i] = hex_to_u8 (ephemeral_pos + j);
+    hook->ephemeral_pubkey_raw[i] = hex_to_u8 (ephemeral_pos + j);
   }
 
   size_t length = 33;
 
-  bool parse_success = hc_secp256k1_pubkey_parse (&electrum->ephemeral_pubkey_struct, electrum->ephemeral_pubkey_raw, length);
+  bool parse_success = hc_secp256k1_pubkey_parse (&hook->ephemeral_pubkey_struct, hook->ephemeral_pubkey_raw, length);
 
   if (parse_success == false) return (PARSER_SALT_VALUE);
 
   // data buf:
 
-  u8* data_buf_ptr = (u8 *) electrum->data_buf;
+  u8* data_buf_ptr = (u8 *) esalt->data_buf;
+
+  memset (data_buf_ptr, 0, sizeof (esalt->data_buf));
 
   for (u32 i = 0, j = 0; j < data_len * 2; i += 1, j += 2)
   {
     data_buf_ptr[i] = hex_to_u8 (data_buf_pos + j);
   }
 
-  // mac:
+  // digest / mac:
 
   for (u32 i = 0, j = 0; j < 64; i += 1, j += 8)
   {
-    electrum->mac[i] = hex_to_u32 (mac_pos + j);
+    digest[i] = hex_to_u32 (mac_pos + j);
 
-    electrum->mac[i] = byte_swap_32 (electrum->mac[i]);
+    digest[i] = byte_swap_32 (digest[i]);
   }
 
   // fake salt
 
-  salt->salt_buf[0] = electrum->data_buf[0];
-  salt->salt_buf[1] = electrum->data_buf[1];
-  salt->salt_buf[2] = electrum->data_buf[2];
-  salt->salt_buf[3] = electrum->data_buf[3];
+  salt->salt_buf[0] = esalt->data_buf[0];
+  salt->salt_buf[1] = esalt->data_buf[1];
+  salt->salt_buf[2] = esalt->data_buf[2];
+  salt->salt_buf[3] = esalt->data_buf[3];
 
   salt->salt_len = 16;
 
   salt->salt_iter = 1024 - 1;
-
-  /**
-   * fake digest
-   */
-
-  digest[0] = electrum->mac[0];
-  digest[1] = electrum->mac[1];
-  digest[2] = electrum->mac[2];
-  digest[3] = electrum->mac[3];
 
   return (PARSER_OK);
 }
 
 int module_hash_encode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const void *digest_buf, MAYBE_UNUSED const salt_t *salt, MAYBE_UNUSED const void *esalt_buf, MAYBE_UNUSED const void *hook_salt_buf, MAYBE_UNUSED const hashinfo_t *hash_info, char *line_buf, MAYBE_UNUSED const int line_size)
 {
-  electrum_hook_salt_t *electrum = (electrum_hook_salt_t *) hook_salt_buf;
+  u32 *digest = (u32 *) digest_buf;
+
+  electrum_t *esalt = (electrum_t *) esalt_buf;
+
+  electrum_hook_salt_t *hook = (electrum_hook_salt_t *) hook_salt_buf;
 
   // ephemeral pubkey:
 
@@ -524,7 +289,7 @@ int module_hash_encode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
 
   for (u32 i = 0, j = 0; i < 33; i += 1, j += 2)
   {
-    const u8 *ptr = (const u8 *) electrum->ephemeral_pubkey_raw;
+    const u8 *ptr = (const u8 *) hook->ephemeral_pubkey_raw;
 
     snprintf (ephemeral + j, 66 + 1 - j, "%02x", ptr[i]);
   }
@@ -535,14 +300,14 @@ int module_hash_encode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
 
   memset (data_buf, 0, sizeof (data_buf));
 
-  for (u32 i = 0, j = 0; i < electrum->data_len; i += 1, j += 2)
+  for (u32 i = 0, j = 0; i < esalt->data_len; i += 1, j += 2)
   {
-    const u8 *ptr = (const u8 *) electrum->data_buf;
+    const u8 *ptr = (const u8 *) esalt->data_buf;
 
     snprintf (data_buf + j, 32768 + 1 - j, "%02x", ptr[i]);
   }
 
-  // mac:
+  // digest / mac:
 
   char mac[64 + 1];
 
@@ -550,14 +315,11 @@ int module_hash_encode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
 
   for (u32 i = 0, j = 0; i < 8; i += 1, j += 8)
   {
-    const u32 *ptr = (const u32 *) electrum->mac;
-
-    snprintf (mac + j, 64 + 1 - j, "%08x", ptr[i]);
+    snprintf (mac + j, 64 + 1 - j, "%08x", digest[i]);
   }
 
-  int bytes_written = snprintf (line_buf, line_size, "%s%u*%s*%s*%s",
+  int bytes_written = snprintf (line_buf, line_size, "%s%s*%s*%s",
     SIGNATURE_ELECTRUM,
-    electrum->version,
     ephemeral,
     data_buf,
     mac);
@@ -583,7 +345,7 @@ void module_init (module_ctx_t *module_ctx)
   module_ctx->module_dgst_pos3                = module_dgst_pos3;
   module_ctx->module_dgst_size                = module_dgst_size;
   module_ctx->module_dictstat_disable         = MODULE_DEFAULT;
-  module_ctx->module_esalt_size               = MODULE_DEFAULT;
+  module_ctx->module_esalt_size               = module_esalt_size;
   module_ctx->module_extra_buffer_size        = MODULE_DEFAULT;
   module_ctx->module_extra_tmp_size           = MODULE_DEFAULT;
   module_ctx->module_forced_outfile_format    = MODULE_DEFAULT;
