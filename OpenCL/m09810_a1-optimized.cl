@@ -20,6 +20,8 @@ typedef struct oldoffice34
   u32 version;
   u32 encryptedVerifier[4];
   u32 encryptedVerifierHash[5];
+  u32 secondBlockData[8];
+  u32 secondBlockLen;
   u32 rc4key[2];
 
 } oldoffice34_t;
@@ -202,18 +204,18 @@ KERNEL_FQ void m09810_m04 (KERN_ATTR_ESALT (oldoffice34_t))
 
   for (u32 il_pos = 0; il_pos < il_cnt; il_pos += VECT_SIZE)
   {
-    const u32x pw_r_len = pwlenx_create_combt (combs_buf, il_pos) & 63;
+    const u32 pw_r_len = pwlenx_create_combt (combs_buf, il_pos) & 63;
 
-    const u32x pw_len = (pw_l_len + pw_r_len) & 63;
+    const u32 pw_len = (pw_l_len + pw_r_len) & 63;
 
     /**
      * concat password candidate
      */
 
-    u32x wordl0[4] = { 0 };
-    u32x wordl1[4] = { 0 };
-    u32x wordl2[4] = { 0 };
-    u32x wordl3[4] = { 0 };
+    u32 wordl0[4] = { 0 };
+    u32 wordl1[4] = { 0 };
+    u32 wordl2[4] = { 0 };
+    u32 wordl3[4] = { 0 };
 
     wordl0[0] = pw_buf0[0];
     wordl0[1] = pw_buf0[1];
@@ -224,10 +226,10 @@ KERNEL_FQ void m09810_m04 (KERN_ATTR_ESALT (oldoffice34_t))
     wordl1[2] = pw_buf1[2];
     wordl1[3] = pw_buf1[3];
 
-    u32x wordr0[4] = { 0 };
-    u32x wordr1[4] = { 0 };
-    u32x wordr2[4] = { 0 };
-    u32x wordr3[4] = { 0 };
+    u32 wordr0[4] = { 0 };
+    u32 wordr1[4] = { 0 };
+    u32 wordr2[4] = { 0 };
+    u32 wordr3[4] = { 0 };
 
     wordr0[0] = ix_create_combt (combs_buf, il_pos, 0);
     wordr0[1] = ix_create_combt (combs_buf, il_pos, 1);
@@ -247,10 +249,10 @@ KERNEL_FQ void m09810_m04 (KERN_ATTR_ESALT (oldoffice34_t))
       switch_buffer_by_offset_le_VV (wordl0, wordl1, wordl2, wordl3, pw_r_len);
     }
 
-    u32x w0[4];
-    u32x w1[4];
-    u32x w2[4];
-    u32x w3[4];
+    u32 w0[4];
+    u32 w1[4];
+    u32 w2[4];
+    u32 w3[4];
 
     w0[0] = wordl0[0] | wordr0[0];
     w0[1] = wordl0[1] | wordr0[1];
@@ -385,18 +387,18 @@ KERNEL_FQ void m09810_s04 (KERN_ATTR_ESALT (oldoffice34_t))
 
   for (u32 il_pos = 0; il_pos < il_cnt; il_pos += VECT_SIZE)
   {
-    const u32x pw_r_len = pwlenx_create_combt (combs_buf, il_pos) & 63;
+    const u32 pw_r_len = pwlenx_create_combt (combs_buf, il_pos) & 63;
 
-    const u32x pw_len = (pw_l_len + pw_r_len) & 63;
+    const u32 pw_len = (pw_l_len + pw_r_len) & 63;
 
     /**
      * concat password candidate
      */
 
-    u32x wordl0[4] = { 0 };
-    u32x wordl1[4] = { 0 };
-    u32x wordl2[4] = { 0 };
-    u32x wordl3[4] = { 0 };
+    u32 wordl0[4] = { 0 };
+    u32 wordl1[4] = { 0 };
+    u32 wordl2[4] = { 0 };
+    u32 wordl3[4] = { 0 };
 
     wordl0[0] = pw_buf0[0];
     wordl0[1] = pw_buf0[1];
@@ -407,10 +409,10 @@ KERNEL_FQ void m09810_s04 (KERN_ATTR_ESALT (oldoffice34_t))
     wordl1[2] = pw_buf1[2];
     wordl1[3] = pw_buf1[3];
 
-    u32x wordr0[4] = { 0 };
-    u32x wordr1[4] = { 0 };
-    u32x wordr2[4] = { 0 };
-    u32x wordr3[4] = { 0 };
+    u32 wordr0[4] = { 0 };
+    u32 wordr1[4] = { 0 };
+    u32 wordr2[4] = { 0 };
+    u32 wordr3[4] = { 0 };
 
     wordr0[0] = ix_create_combt (combs_buf, il_pos, 0);
     wordr0[1] = ix_create_combt (combs_buf, il_pos, 1);
@@ -430,10 +432,10 @@ KERNEL_FQ void m09810_s04 (KERN_ATTR_ESALT (oldoffice34_t))
       switch_buffer_by_offset_le_VV (wordl0, wordl1, wordl2, wordl3, pw_r_len);
     }
 
-    u32x w0[4];
-    u32x w1[4];
-    u32x w2[4];
-    u32x w3[4];
+    u32 w0[4];
+    u32 w1[4];
+    u32 w2[4];
+    u32 w3[4];
 
     w0[0] = wordl0[0] | wordr0[0];
     w0[1] = wordl0[1] | wordr0[1];

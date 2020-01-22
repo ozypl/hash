@@ -3,7 +3,8 @@
  * License.....: MIT
  */
 
-#define NEW_SIMD_CODE
+//too much register pressure
+//#define NEW_SIMD_CODE
 
 #ifdef KERNEL_STATIC
 #include "inc_vendor.h"
@@ -14,14 +15,141 @@
 #include "inc_hash_sha1.cl"
 #endif
 
+#define MIN_NULL_BYTES 10
+
 typedef struct oldoffice34
 {
   u32 version;
   u32 encryptedVerifier[4];
   u32 encryptedVerifierHash[5];
+  u32 secondBlockData[8];
+  u32 secondBlockLen;
   u32 rc4key[2];
 
 } oldoffice34_t;
+
+typedef struct
+{
+  u8 S[256];
+
+  u32 wtf_its_faster;
+
+} RC4_KEY;
+
+DECLSPEC void swap (LOCAL_AS RC4_KEY *rc4_key, const u8 i, const u8 j)
+{
+  u8 tmp;
+
+  tmp           = rc4_key->S[i];
+  rc4_key->S[i] = rc4_key->S[j];
+  rc4_key->S[j] = tmp;
+}
+
+DECLSPEC void rc4_init_16 (LOCAL_AS RC4_KEY *rc4_key, const u32 *data)
+{
+  u32 v = 0x03020100;
+  u32 a = 0x04040404;
+
+  LOCAL_AS u32 *ptr = (LOCAL_AS u32 *) rc4_key->S;
+
+  #ifdef _unroll
+  #pragma unroll
+  #endif
+  for (u32 i = 0; i < 64; i++)
+  {
+    *ptr++ = v; v += a;
+  }
+
+  u32 j = 0;
+
+  for (u32 i = 0; i < 16; i++)
+  {
+    u32 idx = i * 16;
+
+    u32 v;
+
+    v = data[0];
+
+    j += rc4_key->S[idx] + (v >>  0); swap (rc4_key, idx, j); idx++;
+    j += rc4_key->S[idx] + (v >>  8); swap (rc4_key, idx, j); idx++;
+    j += rc4_key->S[idx] + (v >> 16); swap (rc4_key, idx, j); idx++;
+    j += rc4_key->S[idx] + (v >> 24); swap (rc4_key, idx, j); idx++;
+
+    v = data[1];
+
+    j += rc4_key->S[idx] + (v >>  0); swap (rc4_key, idx, j); idx++;
+    j += rc4_key->S[idx] + (v >>  8); swap (rc4_key, idx, j); idx++;
+    j += rc4_key->S[idx] + (v >> 16); swap (rc4_key, idx, j); idx++;
+    j += rc4_key->S[idx] + (v >> 24); swap (rc4_key, idx, j); idx++;
+
+    v = data[2];
+
+    j += rc4_key->S[idx] + (v >>  0); swap (rc4_key, idx, j); idx++;
+    j += rc4_key->S[idx] + (v >>  8); swap (rc4_key, idx, j); idx++;
+    j += rc4_key->S[idx] + (v >> 16); swap (rc4_key, idx, j); idx++;
+    j += rc4_key->S[idx] + (v >> 24); swap (rc4_key, idx, j); idx++;
+
+    v = data[3];
+
+    j += rc4_key->S[idx] + (v >>  0); swap (rc4_key, idx, j); idx++;
+    j += rc4_key->S[idx] + (v >>  8); swap (rc4_key, idx, j); idx++;
+    j += rc4_key->S[idx] + (v >> 16); swap (rc4_key, idx, j); idx++;
+    j += rc4_key->S[idx] + (v >> 24); swap (rc4_key, idx, j); idx++;
+  }
+}
+
+DECLSPEC u8 rc4_next_16 (LOCAL_AS RC4_KEY *rc4_key, u8 i, u8 j, const u32 *in, u32 *out)
+{
+  #ifdef _unroll
+  #pragma unroll
+  #endif
+  for (u32 k = 0; k < 4; k++)
+  {
+    u32 xor4 = 0;
+
+    u8 idx;
+
+    i += 1;
+    j += rc4_key->S[i];
+
+    swap (rc4_key, i, j);
+
+    idx = rc4_key->S[i] + rc4_key->S[j];
+
+    xor4 |= rc4_key->S[idx] <<  0;
+
+    i += 1;
+    j += rc4_key->S[i];
+
+    swap (rc4_key, i, j);
+
+    idx = rc4_key->S[i] + rc4_key->S[j];
+
+    xor4 |= rc4_key->S[idx] <<  8;
+
+    i += 1;
+    j += rc4_key->S[i];
+
+    swap (rc4_key, i, j);
+
+    idx = rc4_key->S[i] + rc4_key->S[j];
+
+    xor4 |= rc4_key->S[idx] << 16;
+
+    i += 1;
+    j += rc4_key->S[i];
+
+    swap (rc4_key, i, j);
+
+    idx = rc4_key->S[i] + rc4_key->S[j];
+
+    xor4 |= rc4_key->S[idx] << 24;
+
+    out[k] = in[k] ^ xor4;
+  }
+
+  return j;
+}
 
 KERNEL_FQ void m09820_m04 (KERN_ATTR_ESALT (oldoffice34_t))
 {
@@ -54,6 +182,14 @@ KERNEL_FQ void m09820_m04 (KERN_ATTR_ESALT (oldoffice34_t))
   const u32 pw_l_len = pws[gid].pw_len & 63;
 
   /**
+   * shared
+   */
+
+  LOCAL_VK RC4_KEY rc4_keys[64];
+
+  LOCAL_AS RC4_KEY *rc4_key = &rc4_keys[lid];
+
+  /**
    * salt
    */
 
@@ -70,18 +206,18 @@ KERNEL_FQ void m09820_m04 (KERN_ATTR_ESALT (oldoffice34_t))
 
   for (u32 il_pos = 0; il_pos < il_cnt; il_pos += VECT_SIZE)
   {
-    const u32x pw_r_len = pwlenx_create_combt (combs_buf, il_pos) & 63;
+    const u32 pw_r_len = pwlenx_create_combt (combs_buf, il_pos) & 63;
 
-    const u32x pw_len = (pw_l_len + pw_r_len) & 63;
+    const u32 pw_len = (pw_l_len + pw_r_len) & 63;
 
     /**
      * concat password candidate
      */
 
-    u32x wordl0[4] = { 0 };
-    u32x wordl1[4] = { 0 };
-    u32x wordl2[4] = { 0 };
-    u32x wordl3[4] = { 0 };
+    u32 wordl0[4] = { 0 };
+    u32 wordl1[4] = { 0 };
+    u32 wordl2[4] = { 0 };
+    u32 wordl3[4] = { 0 };
 
     wordl0[0] = pw_buf0[0];
     wordl0[1] = pw_buf0[1];
@@ -92,10 +228,10 @@ KERNEL_FQ void m09820_m04 (KERN_ATTR_ESALT (oldoffice34_t))
     wordl1[2] = pw_buf1[2];
     wordl1[3] = pw_buf1[3];
 
-    u32x wordr0[4] = { 0 };
-    u32x wordr1[4] = { 0 };
-    u32x wordr2[4] = { 0 };
-    u32x wordr3[4] = { 0 };
+    u32 wordr0[4] = { 0 };
+    u32 wordr1[4] = { 0 };
+    u32 wordr2[4] = { 0 };
+    u32 wordr3[4] = { 0 };
 
     wordr0[0] = ix_create_combt (combs_buf, il_pos, 0);
     wordr0[1] = ix_create_combt (combs_buf, il_pos, 1);
@@ -115,10 +251,10 @@ KERNEL_FQ void m09820_m04 (KERN_ATTR_ESALT (oldoffice34_t))
       switch_buffer_by_offset_le_VV (wordl0, wordl1, wordl2, wordl3, pw_r_len);
     }
 
-    u32x w0[4];
-    u32x w1[4];
-    u32x w2[4];
-    u32x w3[4];
+    u32 w0[4];
+    u32 w1[4];
+    u32 w2[4];
+    u32 w3[4];
 
     w0[0] = wordl0[0] | wordr0[0];
     w0[1] = wordl0[1] | wordr0[1];
@@ -136,7 +272,7 @@ KERNEL_FQ void m09820_m04 (KERN_ATTR_ESALT (oldoffice34_t))
     make_utf16le (w1, w2, w3);
     make_utf16le (w0, w0, w1);
 
-    const u32x pw_salt_len = (pw_len * 2) + 16;
+    const u32 pw_salt_len = (pw_len * 2) + 16;
 
     w3[3] = pw_salt_len * 8;
     w3[2] = 0;
@@ -155,21 +291,21 @@ KERNEL_FQ void m09820_m04 (KERN_ATTR_ESALT (oldoffice34_t))
     w0[1] = salt_buf[1];
     w0[0] = salt_buf[0];
 
-    u32x digest[5];
+    u32 pass_hash[5];
 
-    digest[0] = SHA1M_A;
-    digest[1] = SHA1M_B;
-    digest[2] = SHA1M_C;
-    digest[3] = SHA1M_D;
-    digest[4] = SHA1M_E;
+    pass_hash[0] = SHA1M_A;
+    pass_hash[1] = SHA1M_B;
+    pass_hash[2] = SHA1M_C;
+    pass_hash[3] = SHA1M_D;
+    pass_hash[4] = SHA1M_E;
 
-    sha1_transform_vector (w0, w1, w2, w3, digest);
+    sha1_transform (w0, w1, w2, w3, pass_hash);
 
-    w0[0] = digest[0];
-    w0[1] = digest[1];
-    w0[2] = digest[2];
-    w0[3] = digest[3];
-    w1[0] = digest[4];
+    w0[0] = pass_hash[0];
+    w0[1] = pass_hash[1];
+    w0[2] = pass_hash[2];
+    w0[3] = pass_hash[3];
+    w1[0] = pass_hash[4];
     w1[1] = 0;
     w1[2] = 0x80000000;
     w1[3] = 0;
@@ -182,20 +318,110 @@ KERNEL_FQ void m09820_m04 (KERN_ATTR_ESALT (oldoffice34_t))
     w3[2] = 0;
     w3[3] = (20 + 4) * 8;
 
+    u32 digest[5];
+
     digest[0] = SHA1M_A;
     digest[1] = SHA1M_B;
     digest[2] = SHA1M_C;
     digest[3] = SHA1M_D;
     digest[4] = SHA1M_E;
 
-    sha1_transform_vector (w0, w1, w2, w3, digest);
+    sha1_transform (w0, w1, w2, w3, digest);
 
     digest[0] = hc_swap32 (digest[0]);
     digest[1] = hc_swap32 (digest[1]) & 0xff;
     digest[2] = 0;
     digest[3] = 0;
 
-    COMPARE_M_SIMD (digest[0], digest[1], digest[2], digest[3]);
+    // initial compare
+
+    int digest_pos = find_hash (digest, digests_cnt, &digests_buf[digests_offset]);
+
+    if (digest_pos == -1) continue;
+
+    if (esalt_bufs[digests_offset].secondBlockLen != 0)
+    {
+      w0[0] = pass_hash[0];
+      w0[1] = pass_hash[1];
+      w0[2] = pass_hash[2];
+      w0[3] = pass_hash[3];
+      w1[0] = pass_hash[4];
+      w1[1] = 0x01000000;
+      w1[2] = 0x80000000;
+      w1[3] = 0;
+      w2[0] = 0;
+      w2[1] = 0;
+      w2[2] = 0;
+      w2[3] = 0;
+      w3[0] = 0;
+      w3[1] = 0;
+      w3[2] = 0;
+      w3[3] = (20 + 4) * 8;
+
+      digest[0] = SHA1M_A;
+      digest[1] = SHA1M_B;
+      digest[2] = SHA1M_C;
+      digest[3] = SHA1M_D;
+      digest[4] = SHA1M_E;
+
+      sha1_transform (w0, w1, w2, w3, digest);
+
+      digest[0] = hc_swap32_S (digest[0]);
+      digest[1] = hc_swap32_S (digest[1]);
+      digest[2] = 0;
+      digest[3] = 0;
+
+      digest[1] &= 0xff; // only 40-bit key
+
+      // second block decrypt:
+
+      rc4_init_16 (rc4_key, digest);
+
+      u32 secondBlockData[4];
+
+      secondBlockData[0] = esalt_bufs[digests_offset].secondBlockData[0];
+      secondBlockData[1] = esalt_bufs[digests_offset].secondBlockData[1];
+      secondBlockData[2] = esalt_bufs[digests_offset].secondBlockData[2];
+      secondBlockData[3] = esalt_bufs[digests_offset].secondBlockData[3];
+
+      u32 out[4];
+
+      u32 j = rc4_next_16 (rc4_key, 0, 0, secondBlockData, out);
+
+      int null_bytes = 0;
+
+      for (int k = 0; k < 4; k++)
+      {
+        if ((out[k] & 0x000000ff) == 0) null_bytes++;
+        if ((out[k] & 0x0000ff00) == 0) null_bytes++;
+        if ((out[k] & 0x00ff0000) == 0) null_bytes++;
+        if ((out[k] & 0xff000000) == 0) null_bytes++;
+      }
+
+      secondBlockData[0] = esalt_bufs[digests_offset].secondBlockData[4];
+      secondBlockData[1] = esalt_bufs[digests_offset].secondBlockData[5];
+      secondBlockData[2] = esalt_bufs[digests_offset].secondBlockData[6];
+      secondBlockData[3] = esalt_bufs[digests_offset].secondBlockData[7];
+
+      rc4_next_16 (rc4_key, 16, j, secondBlockData, out);
+
+      for (int k = 0; k < 4; k++)
+      {
+        if ((out[k] & 0x000000ff) == 0) null_bytes++;
+        if ((out[k] & 0x0000ff00) == 0) null_bytes++;
+        if ((out[k] & 0x00ff0000) == 0) null_bytes++;
+        if ((out[k] & 0xff000000) == 0) null_bytes++;
+      }
+
+      if (null_bytes < MIN_NULL_BYTES) continue;
+    }
+
+    const u32 final_hash_pos = digests_offset + digest_pos;
+
+    if (atomic_inc (&hashes_shown[final_hash_pos]) == 0)
+    {
+      mark_hash (plains_buf, d_return_buf, salt_pos, digests_cnt, digest_pos, final_hash_pos, gid, il_pos, 0, 0);
+    }
   }
 }
 
@@ -238,6 +464,14 @@ KERNEL_FQ void m09820_s04 (KERN_ATTR_ESALT (oldoffice34_t))
   const u32 pw_l_len = pws[gid].pw_len & 63;
 
   /**
+   * shared
+   */
+
+  LOCAL_VK RC4_KEY rc4_keys[64];
+
+  LOCAL_AS RC4_KEY *rc4_key = &rc4_keys[lid];
+
+  /**
    * salt
    */
 
@@ -266,18 +500,18 @@ KERNEL_FQ void m09820_s04 (KERN_ATTR_ESALT (oldoffice34_t))
 
   for (u32 il_pos = 0; il_pos < il_cnt; il_pos += VECT_SIZE)
   {
-    const u32x pw_r_len = pwlenx_create_combt (combs_buf, il_pos) & 63;
+    const u32 pw_r_len = pwlenx_create_combt (combs_buf, il_pos) & 63;
 
-    const u32x pw_len = (pw_l_len + pw_r_len) & 63;
+    const u32 pw_len = (pw_l_len + pw_r_len) & 63;
 
     /**
      * concat password candidate
      */
 
-    u32x wordl0[4] = { 0 };
-    u32x wordl1[4] = { 0 };
-    u32x wordl2[4] = { 0 };
-    u32x wordl3[4] = { 0 };
+    u32 wordl0[4] = { 0 };
+    u32 wordl1[4] = { 0 };
+    u32 wordl2[4] = { 0 };
+    u32 wordl3[4] = { 0 };
 
     wordl0[0] = pw_buf0[0];
     wordl0[1] = pw_buf0[1];
@@ -288,10 +522,10 @@ KERNEL_FQ void m09820_s04 (KERN_ATTR_ESALT (oldoffice34_t))
     wordl1[2] = pw_buf1[2];
     wordl1[3] = pw_buf1[3];
 
-    u32x wordr0[4] = { 0 };
-    u32x wordr1[4] = { 0 };
-    u32x wordr2[4] = { 0 };
-    u32x wordr3[4] = { 0 };
+    u32 wordr0[4] = { 0 };
+    u32 wordr1[4] = { 0 };
+    u32 wordr2[4] = { 0 };
+    u32 wordr3[4] = { 0 };
 
     wordr0[0] = ix_create_combt (combs_buf, il_pos, 0);
     wordr0[1] = ix_create_combt (combs_buf, il_pos, 1);
@@ -311,10 +545,10 @@ KERNEL_FQ void m09820_s04 (KERN_ATTR_ESALT (oldoffice34_t))
       switch_buffer_by_offset_le_VV (wordl0, wordl1, wordl2, wordl3, pw_r_len);
     }
 
-    u32x w0[4];
-    u32x w1[4];
-    u32x w2[4];
-    u32x w3[4];
+    u32 w0[4];
+    u32 w1[4];
+    u32 w2[4];
+    u32 w3[4];
 
     w0[0] = wordl0[0] | wordr0[0];
     w0[1] = wordl0[1] | wordr0[1];
@@ -332,7 +566,7 @@ KERNEL_FQ void m09820_s04 (KERN_ATTR_ESALT (oldoffice34_t))
     make_utf16le (w1, w2, w3);
     make_utf16le (w0, w0, w1);
 
-    const u32x pw_salt_len = (pw_len * 2) + 16;
+    const u32 pw_salt_len = (pw_len * 2) + 16;
 
     w3[3] = pw_salt_len * 8;
     w3[2] = 0;
@@ -351,21 +585,21 @@ KERNEL_FQ void m09820_s04 (KERN_ATTR_ESALT (oldoffice34_t))
     w0[1] = salt_buf[1];
     w0[0] = salt_buf[0];
 
-    u32x digest[5];
+    u32 pass_hash[5];
 
-    digest[0] = SHA1M_A;
-    digest[1] = SHA1M_B;
-    digest[2] = SHA1M_C;
-    digest[3] = SHA1M_D;
-    digest[4] = SHA1M_E;
+    pass_hash[0] = SHA1M_A;
+    pass_hash[1] = SHA1M_B;
+    pass_hash[2] = SHA1M_C;
+    pass_hash[3] = SHA1M_D;
+    pass_hash[4] = SHA1M_E;
 
-    sha1_transform_vector (w0, w1, w2, w3, digest);
+    sha1_transform (w0, w1, w2, w3, pass_hash);
 
-    w0[0] = digest[0];
-    w0[1] = digest[1];
-    w0[2] = digest[2];
-    w0[3] = digest[3];
-    w1[0] = digest[4];
+    w0[0] = pass_hash[0];
+    w0[1] = pass_hash[1];
+    w0[2] = pass_hash[2];
+    w0[3] = pass_hash[3];
+    w1[0] = pass_hash[4];
     w1[1] = 0;
     w1[2] = 0x80000000;
     w1[3] = 0;
@@ -378,20 +612,107 @@ KERNEL_FQ void m09820_s04 (KERN_ATTR_ESALT (oldoffice34_t))
     w3[2] = 0;
     w3[3] = (20 + 4) * 8;
 
+    u32 digest[5];
+
     digest[0] = SHA1M_A;
     digest[1] = SHA1M_B;
     digest[2] = SHA1M_C;
     digest[3] = SHA1M_D;
     digest[4] = SHA1M_E;
 
-    sha1_transform_vector (w0, w1, w2, w3, digest);
+    sha1_transform (w0, w1, w2, w3, digest);
 
     digest[0] = hc_swap32 (digest[0]);
     digest[1] = hc_swap32 (digest[1]) & 0xff;
     digest[2] = 0;
     digest[3] = 0;
 
-    COMPARE_S_SIMD (digest[0], digest[1], digest[2], digest[3]);
+    // initial compare
+
+    if (digest[0] != search[0]) continue;
+    if (digest[1] != search[1]) continue;
+
+    if (esalt_bufs[digests_offset].secondBlockLen != 0)
+    {
+      w0[0] = pass_hash[0];
+      w0[1] = pass_hash[1];
+      w0[2] = pass_hash[2];
+      w0[3] = pass_hash[3];
+      w1[0] = pass_hash[4];
+      w1[1] = 0x01000000;
+      w1[2] = 0x80000000;
+      w1[3] = 0;
+      w2[0] = 0;
+      w2[1] = 0;
+      w2[2] = 0;
+      w2[3] = 0;
+      w3[0] = 0;
+      w3[1] = 0;
+      w3[2] = 0;
+      w3[3] = (20 + 4) * 8;
+
+      digest[0] = SHA1M_A;
+      digest[1] = SHA1M_B;
+      digest[2] = SHA1M_C;
+      digest[3] = SHA1M_D;
+      digest[4] = SHA1M_E;
+
+      sha1_transform (w0, w1, w2, w3, digest);
+
+      digest[0] = hc_swap32_S (digest[0]);
+      digest[1] = hc_swap32_S (digest[1]);
+      digest[2] = 0;
+      digest[3] = 0;
+
+      digest[1] &= 0xff; // only 40-bit key
+
+      // second block decrypt:
+
+      rc4_init_16 (rc4_key, digest);
+
+      u32 secondBlockData[4];
+
+      secondBlockData[0] = esalt_bufs[digests_offset].secondBlockData[0];
+      secondBlockData[1] = esalt_bufs[digests_offset].secondBlockData[1];
+      secondBlockData[2] = esalt_bufs[digests_offset].secondBlockData[2];
+      secondBlockData[3] = esalt_bufs[digests_offset].secondBlockData[3];
+
+      u32 out[4];
+
+      u32 j = rc4_next_16 (rc4_key, 0, 0, secondBlockData, out);
+
+      int null_bytes = 0;
+
+      for (int k = 0; k < 4; k++)
+      {
+        if ((out[k] & 0x000000ff) == 0) null_bytes++;
+        if ((out[k] & 0x0000ff00) == 0) null_bytes++;
+        if ((out[k] & 0x00ff0000) == 0) null_bytes++;
+        if ((out[k] & 0xff000000) == 0) null_bytes++;
+      }
+
+      secondBlockData[0] = esalt_bufs[digests_offset].secondBlockData[4];
+      secondBlockData[1] = esalt_bufs[digests_offset].secondBlockData[5];
+      secondBlockData[2] = esalt_bufs[digests_offset].secondBlockData[6];
+      secondBlockData[3] = esalt_bufs[digests_offset].secondBlockData[7];
+
+      rc4_next_16 (rc4_key, 16, j, secondBlockData, out);
+
+      for (int k = 0; k < 4; k++)
+      {
+        if ((out[k] & 0x000000ff) == 0) null_bytes++;
+        if ((out[k] & 0x0000ff00) == 0) null_bytes++;
+        if ((out[k] & 0x00ff0000) == 0) null_bytes++;
+        if ((out[k] & 0xff000000) == 0) null_bytes++;
+      }
+
+      if (null_bytes < MIN_NULL_BYTES) continue;
+    }
+
+    if (atomic_inc (&hashes_shown[digests_offset]) == 0)
+    {
+      mark_hash (plains_buf, d_return_buf, salt_pos, digests_cnt, 0, digests_offset + 0, gid, il_pos, 0, 0);
+    }
   }
 }
 
